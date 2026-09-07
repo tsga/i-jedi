@@ -198,6 +198,110 @@ namespace ijedi
     md.vtype = "magnitude";
     addFieldMetadata(fieldsmetadata, nlev, md);
 
+    md.longName = "soilt1";
+    md.units = "none";
+    md.kind = "double";
+    md.tracer = "false";
+    md.levels = "1";
+    md.vtype = "magnitude";
+    addFieldMetadata(fieldsmetadata, nlev, md);
+    
+    md.longName = "soilt2";
+    md.units = "none";
+    md.kind = "double";
+    md.tracer = "false";
+    md.levels = "1";
+    md.vtype = "magnitude";
+    addFieldMetadata(fieldsmetadata, nlev, md);
+
+    md.longName = "soilt3";
+    md.units = "none";
+    md.kind = "double";
+    md.tracer = "false";
+    md.levels = "1";
+    md.vtype = "magnitude";
+    addFieldMetadata(fieldsmetadata, nlev, md);
+
+    md.longName = "soilt4";
+    md.units = "none";
+    md.kind = "double";
+    md.tracer = "false";
+    md.levels = "1";
+    md.vtype = "magnitude";
+    addFieldMetadata(fieldsmetadata, nlev, md);
+
+    md.longName = "soill1";
+    md.units = "none";
+    md.kind = "double";
+    md.tracer = "false";
+    md.levels = "1";
+    md.vtype = "magnitude";
+    addFieldMetadata(fieldsmetadata, nlev, md);
+
+    md.longName = "soill2";
+    md.units = "none";
+    md.kind = "double";
+    md.tracer = "false";
+    md.levels = "1";
+    md.vtype = "magnitude";
+    addFieldMetadata(fieldsmetadata, nlev, md);
+
+    md.longName = "soill3";
+    md.units = "none";
+    md.kind = "double";
+    md.tracer = "false";
+    md.levels = "1";
+    md.vtype = "magnitude";
+    addFieldMetadata(fieldsmetadata, nlev, md);
+
+    md.longName = "soil14";
+    md.units = "none";
+    md.kind = "double";
+    md.tracer = "false";
+    md.levels = "1";
+    md.vtype = "magnitude";
+    addFieldMetadata(fieldsmetadata, nlev, md);
+
+    md.longName = "soilw1";
+    md.units = "none";
+    md.kind = "double";
+    md.tracer = "false";
+    md.levels = "1";
+    md.vtype = "magnitude";
+    addFieldMetadata(fieldsmetadata, nlev, md);
+
+    md.longName = "soilw2";
+    md.units = "none";
+    md.kind = "double";
+    md.tracer = "false";
+    md.levels = "1";
+    md.vtype = "magnitude";
+    addFieldMetadata(fieldsmetadata, nlev, md);
+
+    md.longName = "soilw3";
+    md.units = "none";
+    md.kind = "double";
+    md.tracer = "false";
+    md.levels = "1";
+    md.vtype = "magnitude";
+    addFieldMetadata(fieldsmetadata, nlev, md);
+
+    md.longName = "soilw4";
+    md.units = "none";
+    md.kind = "double";
+    md.tracer = "false";
+    md.levels = "1";
+    md.vtype = "magnitude";
+    addFieldMetadata(fieldsmetadata, nlev, md);    
+
+    md.longName = "specfic_humidity_at_2m";
+    md.units = "kg/kg";
+    md.kind = "double";
+    md.tracer = "false";
+    md.levels = "1";
+    md.vtype = "magnitude";
+    addFieldMetadata(fieldsmetadata, nlev, md);    
+
     md.longName = "air_upward_absolute_vorticity";
     md.units = "m+2s";
     md.kind = "double";

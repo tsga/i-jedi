@@ -15,6 +15,7 @@
 #include "ijedi/Geometry/gsibec/GeometryGsibec.h"
 #include "ijedi/Geometry/mpas/GeometryMPAS.h"
 #include "ijedi/Geometry/mom6/GeometryMOM6.h"
+#include "ijedi/Geometry/landVector/GeometryLandVector.h"
 
 namespace ijedi
 {
@@ -54,7 +55,11 @@ namespace ijedi
       return std::make_shared<GeometryGsibec>(geomConf, comm, geomVars, functionSpace, fieldSet,
                                               levelsAreTopDown, numLevels);
     }
-
+    if (type == "landVector")
+    {
+      return std::make_shared<GeometryLandVector>(geomConf, comm, geomVars, functionSpace, fieldSet,
+                                              levelsAreTopDown, numLevels);
+    }
     throw eckit::BadValue("Unsupported geometry type: " + type,
                           Here());
   }
