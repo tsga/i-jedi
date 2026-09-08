@@ -5,12 +5,18 @@
 !! Tseganeh ZG April 2026 bring soil specific parts close to snow DA incrments code in GDASApp
 
 module soil_increments
+    use iso_c_binding, only: c_int, c_float, c_bool, c_char
+    implicit none
 
     private
 
     public add_increment_soil
     public calculate_landinc_mask
     public apply_land_da_adjustments_soil
+
+    ! C-interoperable interfaces
+    public :: c_add_increment_soil
+    public :: c_apply_land_da_adjustments_soil
 
     integer, parameter       :: lsm_noahmp=2      !< flag for NOAHMP land surface model
     real, parameter          :: tfreez=273.16 !< con_t0c  in physcons
@@ -42,16 +48,18 @@ contains
  !! mpi init in calling rourine
  !! applying only for NoahMP
 
-subroutine add_increment_soil(lsoil_incr,stcinc,slcinc,stc_state,smc_state,slc_state,stc_updated,&
-              slc_updated,soilsnow_tile,soilsnow_fg_tile,lensfc,lsoil,myrank, upd_stc, upd_slc, print_summary, print_debug)
+subroutine add_increment_soil(myrank, lsoil, lsoil_incr, lensfc, &
+                              soilsnow_tile, upd_stc, upd_slc, print_summary, print_debug, &
+                              stc_state, slc_state, smc_state, stcinc, slcinc, &
+                              stc_updated, slc_updated)
 
     use mpi
 
     implicit none
 
-    integer, intent(in)      :: lsoil_incr, lensfc, lsoil, myrank
+    integer, intent(in)      :: myrank, lsoil, lsoil_incr, lensfc 
 
-    integer, intent(in)      :: soilsnow_tile(lensfc), soilsnow_fg_tile(lensfc)
+    integer, intent(in)      :: soilsnow_tile(lensfc)    !, soilsnow_fg_tile(lensfc)
     real, intent(inout)      :: stc_state(lensfc, lsoil)
     real, intent(inout)      :: slc_state(lensfc, lsoil)
     real, intent(inout)      :: smc_state(lensfc, lsoil)
@@ -59,10 +67,10 @@ subroutine add_increment_soil(lsoil_incr,stcinc,slcinc,stc_state,smc_state,slc_s
     logical, intent(in)      :: upd_stc, upd_slc, print_summary, print_debug
     
     integer                  :: ij
-    integer                  :: mask_tile, mask_fg_tile
+    integer                  :: mask_tile  !, mask_fg_tile
 
-    real                     :: stcinc(lensfc,lsoil)
-    real                     :: slcinc(lensfc,lsoil)
+    real                     :: stcinc(lsoil_incr,lsoil)
+    real                     :: slcinc(lsoil_incr,lsoil)
 
     integer                  :: k, nother, nsnowupd
     integer                  :: nstcupd, nslcupd,  nfrozen, nfrozen_upd
@@ -89,7 +97,7 @@ subroutine add_increment_soil(lsoil_incr,stcinc,slcinc,stc_state,smc_state,slc_s
     ij_loop : do ij = 1, lensfc
 
         mask_tile    = soilsnow_tile(ij)
-        mask_fg_tile = soilsnow_fg_tile(ij)
+        !mask_fg_tile = soilsnow_fg_tile(ij)
 
         !----------------------------------------------------------------------
         ! mask: 1  - soil, 2 - snow, 0 - land-ice, -1 - not land
@@ -104,7 +112,7 @@ subroutine add_increment_soil(lsoil_incr,stcinc,slcinc,stc_state,smc_state,slc_s
         ! if snow is present before or after snow update, skip soil analysis
         !----------------------------------------------------------------------
 
-        if (mask_fg_tile == 2 .or. mask_tile == 2) then
+        if (mask_tile == 2) then    !mask_fg_tile == 2 .or. 
          nsnowupd = nsnowupd + 1
          cycle ij_loop
         endif
@@ -185,6 +193,30 @@ subroutine add_increment_soil(lsoil_incr,stcinc,slcinc,stc_state,smc_state,slc_s
 end subroutine add_increment_soil
 
 
+!> C-interoperable wrapper for add_increment_soil
+subroutine c_add_increment_soil(myrank, lsoil, lsoil_incr, lensfc, &
+                                soilsnow_tile, upd_stc, upd_slc, print_summary, print_debug, &
+                                stc_state, slc_state, smc_state, stcinc, slcinc, &
+                                stc_updated, slc_updated)  bind(C, name="c_add_increment_soil")
+    use mpi
+    
+    integer(c_int), value              :: lsoil_incr, lensfc, lsoil, myrank
+    integer(c_int), value              :: upd_stc, upd_slc, print_summary, print_debug
+    integer(c_int), dimension(*)       :: soilsnow_tile  !, soilsnow_fg_tile
+    real(c_float), dimension(lensfc, lsoil) :: stc_state, smc_state, slc_state
+    real(c_float), dimension(lsoil_incr, lsoil) :: stcinc, slcinc
+    integer(c_int), dimension(lensfc)  :: stc_updated, slc_updated
+
+    ! Call the original Fortran subroutine
+    call add_increment_soil(myrank, lsoil, lsoil_incr, lensfc, &
+                              soilsnow_tile, logical(upd_stc /= 0), logical(upd_slc /= 0), &
+                              logical(print_summary /= 0), logical(print_debug /= 0) &
+                              stc_state, slc_state, smc_state, stcinc, slcinc, &
+                              stc_updated, slc_updated)
+
+end subroutine c_add_increment_soil
+
+
 !> Calculate soil mask for land on model grid.
 !! Output is 1  - soil, 2 - snow-covered, 0 - land ice, -1  not land.
 !!
@@ -224,6 +256,36 @@ subroutine calculate_landinc_mask(swe,vtype,stype,lensfc,veg_type_landice,mask)
     end do
 
 end subroutine calculate_landinc_mask
+
+! c interoperable wrapper for calculate_landinc_mask
+subroutine c_calculate_landinc_mask(swe,vtype,stype,lensfc,veg_type_landice,mask) &
+  bind(C, name="c_calculate_landinc_mask")
+    implicit none       
+    
+    integer(c_int), intent(in)           :: lensfc, veg_type_landice
+    real(c_double), intent(in)           :: swe(lensfc)
+    integer(c_int), intent(in)           :: vtype(lensfc),stype(lensfc)
+    integer(c_int), intent(out)          :: mask(lensfc)
+
+    integer :: i
+
+    mask = -1 ! not land
+
+    ! land (but not land-ice)
+    do i=1,lensfc
+        if (stype(i) .GT. 0) then
+          if (swe(i) .GT. 0.001) then ! snow covered land
+                mask(i) = 2
+          else                        ! non-snow covered land
+                mask(i) = 1
+          endif
+        end if ! else should work here too
+        if ( vtype(i) ==  veg_type_landice  ) then ! land-ice
+                mask(i) = 0
+        endif
+    end do
+
+end subroutine c_calculate_landinc_mask
 
 !> Make adjustments to dependent variables after applying land increments.
 !! These adjustments are model-dependent, and are currently only coded
@@ -366,5 +428,32 @@ subroutine apply_land_da_adjustments_soil(lsoil_incr, isot, ivegsrc,lensfc, &
     endif
 
 end subroutine apply_land_da_adjustments_soil
+
+
+!> C-interoperable wrapper for apply_land_da_adjustments_soil
+subroutine c_apply_land_da_adjustments_soil(lsoil_incr, isot, ivegsrc, lensfc, lsoil, &
+                                            isoiltype, mask, stc_bck, stc_adj, smc_adj, slc_adj, &
+                                            stc_updated, slc_updated, zsoil, upd_stc, upd_slc, &
+                                            myrank, print_summary, print_debug) &
+                      bind(C, name="c_apply_land_da_adjustments_soil")
+    use mpi
+    use set_soilveg_snippet_mod, only: set_soilveg_noah,set_soilveg_noahmp
+    use sflx_snippet,    only: frh2o
+    
+    integer(c_int), value              :: lsoil_incr, isot, ivegsrc, lensfc, lsoil, myrank
+    integer(c_int), value              :: upd_stc, upd_slc, print_summary, print_debug
+    integer(c_int), dimension(*)       :: isoiltype, mask
+    integer(c_int), dimension(*)       :: stc_updated, slc_updated
+    real(c_float), dimension(lensfc, lsoil) :: stc_bck, stc_adj, smc_adj, slc_adj
+    real(c_float), dimension(*)        :: zsoil
+
+    ! Call the original Fortran subroutine
+    call apply_land_da_adjustments_soil(lsoil_incr, isot, ivegsrc, lensfc, lsoil, &
+                                       isoiltype, mask, stc_bck, stc_adj, smc_adj, slc_adj, &
+                                       stc_updated, slc_updated, zsoil, &
+                                       logical(upd_stc /= 0), logical(upd_slc /= 0), &
+                                       myrank, logical(print_summary /= 0), logical(print_debug /= 0))
+
+end subroutine c_apply_land_da_adjustments_soil
 
 end module soil_increments

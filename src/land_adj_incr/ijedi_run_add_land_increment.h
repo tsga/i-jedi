@@ -7,6 +7,8 @@
 #include "oops/mpi/mpi.h"
 #include "oops/runs/Application.h"
 
+#include "soil_increments_cpp_interface.h"
+
 //namespace gdasapp {
   class runAddLandIncrement {
    public:
@@ -32,6 +34,8 @@
 
     void run(){
 
+      int myrank = comm_.rank();
+
       // We assume both state and increment are in the same geometry
       const ijedi::Geometry<ijedi::Traits> geom_(eckit::LocalConfiguration(config_, "geometry"),
                                                       comm_);
@@ -53,19 +57,110 @@
         oops::Log::test() << "Scaled Increment: " << dx << std::endl;
       }
 
-      // Add increment to state
-      call add_increment_soil(lsoil_incr,noahmp_state%stc_inc,noahmp_state%slc_inc, &
-               noahmp_state%stc,noahmp_state%smc,noahmp_state%slc,&
-               noahmp_state%stc_updated,noahmp_state%slc_updated,noahmp_state%soilsnow_tile,noahmp_state%soilsnow_tile,&
-               len_land_vec,lsoil,myrank, upd_stc, upd_slc, print_summary, print_debug)
+      atlas::FieldSet bkg_fs;
+      xx.toFieldSet(bkg_fs);
 
-            call apply_land_da_adjustments_soil(lsoil_incr, isot, ivegsrc, len_land_vec, &
-                 lsoil, noahmp_state%stype, noahmp_state%soilsnow_tile,noahmp_state%stc_bkg, &
-                 noahmp_state%stc,noahmp_state%smc,noahmp_state%slc, &
-                 noahmp_state%stc_updated,noahmp_state%slc_updated, zsoil, upd_stc, upd_slc, myrank, print_summary, print_debug)
-            
+      // check required fields exist in the fieldset
+      if (!bkg_fs.has("sheleg") ) {
+          oops::Log::error() << "Missing required fields SWE in state FieldSet. Aborting." << std::endl;
+          throw eckit::BadValue("Missing required fields in state FieldSet", Here());
+      }
+      auto bkg_swe = atlas::array::make_view<double, 2>(bkg_fs["sheleg"]);
+      if (!bkg_fs.has("vtype") ) {
+          oops::Log::error() << "Missing required fields vtype in state FieldSet. Aborting." << std::endl;
+          throw eckit::BadValue("Missing required fields in state FieldSet", Here());
+      }
+      auto bkg_vtype = atlas::array::make_view<float, 2>(bkg_fs["vtype"]);
+      if (!bkg_fs.has("stype") ) {
+          oops::Log::error() << "Missing required fields stype in state FieldSet. Aborting." << std::endl;
+          throw eckit::BadValue("Missing required fields in state FieldSet", Here());
+      }
+      auto bkg_stype = atlas::array::make_view<float, 2>(bkg_fs["stype"]);
 
+      if (!bkg_fs.has("stc") ) {
+          oops::Log::error() << "Missing required fields stc in state FieldSet. Aborting." << std::endl;
+          throw eckit::BadValue("Missing required fields in state FieldSet", Here());
+      }
+      auto bkg_stc = atlas::array::make_view<double, 2>(bkg_fs["stc"]);
+      if (!bkg_fs.has("slc") ) {
+          oops::Log::error() << "Missing required fields slc in state FieldSet. Aborting." << std::endl;
+          throw eckit::BadValue("Missing required fields in state FieldSet", Here());
+      }
+      auto bkg_slc = atlas::array::make_view<double, 2>(bkg_fs["slc"]);
+      if (!bkg_fs.has("smc") ) {
+          oops::Log::error() << "Missing required fields smc in state FieldSet. Aborting." << std::endl;
+          throw eckit::BadValue("Missing required fields in state FieldSet", Here());
+      }
+      auto bkg_smc = atlas::array::make_view<double, 2>(bkg_fs["smc"]);
+         
+      bool upd_stc = false, upd_slc = false;
+      atlas::FieldSet inc_fs;
+      dx.toFieldSet(inc_fs);
+      if (bkg_fs.has("stc_inc")) {
+        auto stc_inc = atlas::array::make_view<double, 2>(bkg_fs["stc_inc"]);
+        upd_stc = true;
+        oops::Log::trace << "Updating stc" << std::endl;
+      }
+      if (inc_fs.has("slc_inc")) {
+        auto slc_inc = atlas::array::make_view<double, 2>(inc_fs["slc_inc"]);
+        upd_slc = true;
+        oops::Log::trace << "Updating slc" << std::endl;
+      }
+      
+      // read/construct mask for landice and snow tiles 
+      int lsoil_incr = 2;
+      config_.get("lsoil_incr", lsoil_incr);
+      int len_land_vec = bkg_fs["sheleg"].shape(0);
+      // std::vector<int> mask_landice(geom_.nlevsfc(), 0);
+      std::vector<int> soil_mask(len_land_vec, 0);
+      std::vector<int> istype(len_land_vec, -1);
+      std::vector<std::vector<float>> bk_bkg_stc(len_land_vec, std::vector<float>(lsoil, 0.0));
+      for (int i = 0; i < len_land_vec; ++i) {
+        istype[i] = static_cast<int>(bkg_stype(i, 0));
+        for (int j = 0; j < lsoil; ++j) {
+            bk_bkg_stc[i][j] = bkg_stc(i, j);
+        }  
+      }
+
+
+      c_calculate_landinc_mask(bkg_swe.data(), bkg_vtype.data(), bkg_stype.data(), 
+                             &lsoil_incr, &len_land_vec, soil_mask.data());
+
+      // prefer to zero out increments for mask not equal to 1, then add all inc 
+      /*
+      for (int i = 0; i < len_land_vec; ++i) {
+          if (soil_mask[i] != 1) {
+              for (int j = 0; j < lsoil_incr; ++j) {
+                  stc_inc(i, j) = 0.0;
+                  slc_inc(i, j) = 0.0;
+              }
+          }
+      }
       xx += dx;
+      */
+      bool print_summary = false, print_debug = false;
+      config_.get("print_summary", print_summary);
+      config_.get("print_debug", print_debug);
+
+      // Add increment to state
+      std::vector<int> stc_updated(len_land_vec, 0);
+      std::vector<int> slc_updated(len_land_vec, 0);
+      SoilIncrementsWrapper::addIncrementSoil(
+          myrank, lsoil, lsoil_incr, len_land_vec, soil_mask.data(), 
+          upd_stc, upd_slc, print_summary, print_debug,
+          bkg_stc.data(), bkg_slc.data(), bkg_smc.data(), stc_inc.data(), slc_inc.data(),       
+          stc_updated.data(), slc_updated.data()  
+      );
+       
+      // post-increment adjustments to ensure consistency b/n soil T and soil M
+      SoilIncrementsWrapper::applyLandDAadjustmentsSoil(
+          lsoil_incr, isot, ivegsrc, len_land_vec, lsoil,
+          istype.data(), soil_mask.data(), 
+          bk_bkg_stc.data(), bkg_stc.data(), bkg_smc.data(), bkg_slc.data(),
+          stc_updated.data(), slc_updated.data(), zsoil.data(),
+          upd_stc, upd_slc, myrank, print_summary, print_debug,
+      );
+ 
       oops::Log::test() << "Updated State: " << xx << std::endl;
 
       // Write updated state to file
