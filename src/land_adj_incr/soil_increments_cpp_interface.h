@@ -48,65 +48,82 @@ extern "C" {
     );
 
     void c_calculate_landinc_mask(
-        
         float* swe,
         int* vtype,
         int* stype,
-        int lensfc,
-        int veg_type_landice,
+        int* lensfc,
+        int* veg_type_landice,
         int* mask
     );
 }
 
 // C++ wrapper class for convenient calling from C++
-class SoilIncrementsWrapper {
+class SoilIncrements {
 public:
-    static void addIncrementSoil(
-        int lsoil_incr,
-        const std::vector<float>& stcinc,       // (lensfc, lsoil)
-        const std::vector<float>& slcinc,       // (lensfc, lsoil)
-        std::vector<float>& stc_state,          // (lensfc, lsoil)
-        std::vector<float>& smc_state,          // (lensfc, lsoil)
-        std::vector<float>& slc_state,          // (lensfc, lsoil)
-        std::vector<int>& stc_updated,          // (lensfc)
-        std::vector<int>& slc_updated,          // (lensfc)
-        const std::vector<int>& soilsnow_tile,  // (lensfc)
-        const std::vector<int>& soilsnow_fg_tile,// (lensfc)
+    static void calculateLandIncrementMask(
+        const std::vector<float>& swe_state,       // (lensfc, lsoil)
+        const std::vector<int>& vtype,  // (lensfc)
+        const std::vector<int>& stype,  // (lensfc)
         int lensfc,
-        int lsoil,
+        int veg_type_landice,
+        std::vector<int>& mask           // (lensfc)
+    ) {
+        int i_lensfc = lensfc;
+        int i_veg_type_landice = veg_type_landice;
+        c_calculate_landinc_mask(
+            const_cast<float*>(swe_state.data()),
+            const_cast<int*>(vtype.data()),
+            const_cast<int*>(stype.data()),
+            &i_lensfc,
+            &i_veg_type_landice,
+            mask.data()
+        );
+    }   
+
+    static void addIncrementSoil(
         int myrank,
+        int lsoil,
+        int lsoil_incr,
+        int lensfc,
+        const std::vector<int>& soilsnow_tile,  // (lensfc)
         bool upd_stc,
         bool upd_slc,
         bool print_summary,
-        bool print_debug
+        bool print_debug,
+        std::vector<float>& stc_state,          // (lensfc, lsoil)
+        std::vector<float>& slc_state,          // (lensfc, lsoil)
+        std::vector<float>& smc_state,          // (lensfc, lsoil)
+        const std::vector<float>& stcinc,       // (lensfc, lsoil)
+        const std::vector<float>& slcinc,       // (lensfc, lsoil)
+        std::vector<int>& stc_updated,          // (lensfc)
+        std::vector<int>& slc_updated,          // (lensfc)
     ) {
+        int i_myrank = myrank;
+        int i_lsoil = lsoil;
         int i_lsoil_incr = lsoil_incr;
         int i_lensfc = lensfc;
-        int i_lsoil = lsoil;
-        int i_myrank = myrank;
         int i_upd_stc = upd_stc ? 1 : 0;
         int i_upd_slc = upd_slc ? 1 : 0;
         int i_print_summary = print_summary ? 1 : 0;
         int i_print_debug = print_debug ? 1 : 0;
 
         c_add_increment_soil(
-            &i_lsoil_incr,
-            const_cast<float*>(stcinc.data()),
-            const_cast<float*>(slcinc.data()),
-            stc_state.data(),
-            smc_state.data(),
-            slc_state.data(),
-            stc_updated.data(),
-            slc_updated.data(),
-            const_cast<int*>(soilsnow_tile.data()),
-            const_cast<int*>(soilsnow_fg_tile.data()),
-            &i_lensfc,
-            &i_lsoil,
             &i_myrank,
+            &i_lsoil,
+            &i_lsoil_incr,
+            &i_lensfc,
+            const_cast<int*>(soilsnow_tile.data()),
             &i_upd_stc,
             &i_upd_slc,
             &i_print_summary,
             &i_print_debug
+            stc_state.data(),
+            slc_state.data(),
+            smc_state.data(),
+            const_cast<float*>(stcinc.data()),
+            const_cast<float*>(slcinc.data()),
+            stc_updated.data(),
+            slc_updated.data()
         );
     }
 

@@ -41,13 +41,13 @@
                                                       comm_);
 
       // Read state
-      ijedi::State<ijedi::Traits> xx(geom_, eckit::LocalConfiguration(config_, "state"));
+      ijedi::State<ijedi::Traits> xx(geom_, eckit::LocalConfiguration(config_, "background state"));
       oops::Log::test() << "State: " << xx << std::endl;
 
       // Read increment
       const eckit::LocalConfiguration incParams(config_, "increment");
-      oops::Variables addedVars(incParams, "added variables");
-      ijedi::Increment<ijedi::Traits> dx(geom_, addedVars, xx.validTime());
+      oops::Variables incVars(incParams, "variables");
+      ijedi::Increment<ijedi::Traits> dx(geom_, incVars, xx.validTime());
       dx.read(incParams);
       oops::Log::test() << "Increment: " << dx << std::endl;
 
@@ -113,21 +113,21 @@
       int len_land_vec = bkg_fs["sheleg"].shape(0);
       // std::vector<int> mask_landice(geom_.nlevsfc(), 0);
       std::vector<int> soil_mask(len_land_vec, 0);
+      std::vector<int> ivtype(len_land_vec, -1);
       std::vector<int> istype(len_land_vec, -1);
       std::vector<std::vector<float>> bk_bkg_stc(len_land_vec, std::vector<float>(lsoil, 0.0));
       for (int i = 0; i < len_land_vec; ++i) {
+        ivtype[i] = static_cast<int>(bkg_vtype(i, 0));
         istype[i] = static_cast<int>(bkg_stype(i, 0));
         for (int j = 0; j < lsoil; ++j) {
             bk_bkg_stc[i][j] = bkg_stc(i, j);
         }  
       }
-
-
-      c_calculate_landinc_mask(bkg_swe.data(), bkg_vtype.data(), bkg_stype.data(), 
-                             &lsoil_incr, &len_land_vec, soil_mask.data());
-
-      // prefer to zero out increments for mask not equal to 1, then add all inc 
-      /*
+      
+      // TODO: check if landfrac and icefrac are relevant for mask
+      SoilIncrements::calculateLandIncrementMask(bkg_swe, ivtype, istype, 
+                              len_land_vec, veg_type_landice, soil_mask);
+      // zero out increments for mask not equal to 1
       for (int i = 0; i < len_land_vec; ++i) {
           if (soil_mask[i] != 1) {
               for (int j = 0; j < lsoil_incr; ++j) {
@@ -136,31 +136,32 @@
               }
           }
       }
-      xx += dx;
-      */
+
+      // Add increment to state
+      // TODO: see if we can sync xx and dx configs, zero-out dx, then xx += dx;
       bool print_summary = false, print_debug = false;
       config_.get("print_summary", print_summary);
       config_.get("print_debug", print_debug);
-
-      // Add increment to state
       std::vector<int> stc_updated(len_land_vec, 0);
       std::vector<int> slc_updated(len_land_vec, 0);
-      SoilIncrementsWrapper::addIncrementSoil(
-          myrank, lsoil, lsoil_incr, len_land_vec, soil_mask.data(), 
+      SoilIncrements::addIncrementSoil(
+          myrank, lsoil, lsoil_incr, len_land_vec, soil_mask, 
           upd_stc, upd_slc, print_summary, print_debug,
-          bkg_stc.data(), bkg_slc.data(), bkg_smc.data(), stc_inc.data(), slc_inc.data(),       
-          stc_updated.data(), slc_updated.data()  
+          bkg_stc, bkg_slc, bkg_smc, stc_inc, slc_inc,       
+          stc_updated, slc_updated  
       );
        
       // post-increment adjustments to ensure consistency b/n soil T and soil M
-      SoilIncrementsWrapper::applyLandDAadjustmentsSoil(
+      SoilIncrements::applyLandDAadjustmentsSoil(
           lsoil_incr, isot, ivegsrc, len_land_vec, lsoil,
-          istype.data(), soil_mask.data(), 
-          bk_bkg_stc.data(), bkg_stc.data(), bkg_smc.data(), bkg_slc.data(),
-          stc_updated.data(), slc_updated.data(), zsoil.data(),
+          istype, soil_mask, 
+          bk_bkg_stc, bkg_stc, bkg_smc, bkg_slc,
+          stc_updated, slc_updated, zsoil,
           upd_stc, upd_slc, myrank, print_summary, print_debug,
       );
- 
+
+      // updated state
+      xx.fromFieldSet(bkg_fs);      
       oops::Log::test() << "Updated State: " << xx << std::endl;
 
       // Write updated state to file
