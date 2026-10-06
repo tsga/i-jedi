@@ -14,6 +14,7 @@
 #include "ijedi/Utilities/PrintHelper.h"
 #include "oops/base/GeometryData.h"
 #include "oops/base/Variables.h"
+#include "oops/generic/ProximitySearch.h"
 #include "oops/util/DateTime.h"
 #include "oops/util/Logger.h"
 #include "oops/util/for_each.h"
@@ -130,6 +131,8 @@ namespace ijedi {
 
     const auto & comm = this->geom_.comm();
     const auto & geomData = this->geom_.geometryData();
+    const oops::ProximitySearch & proximitySearch =
+        oops::getProximitySearch(geomData.functionSpace(), geomData.comm());
     const auto lonlatView = atlas::array::make_view<double, 2>(geomData.functionSpace().lonlat());
 
     // Search radius for the nearest owned node. The global tree returns the
@@ -146,7 +149,7 @@ namespace ijedi {
 
       // The MPI task owning the globally-nearest node, then (on that task) the
       // task-local functionspace index of that node.
-      const int localTask = geomData.closestTask(lat[jdir], lon[jdir]);
+      const int localTask = proximitySearch.taskOwningClosestPoint(lat[jdir], lon[jdir]);
 
       // level input is 1-based -> 0-based array index.
       const int lev = level[jdir] - 1;
@@ -154,7 +157,7 @@ namespace ijedi {
       double latDir = 0.0;
       if (static_cast<size_t>(localTask) == comm.rank()) {
         const std::optional<int> index =
-            geomData.closestPointWithinRadius(lat[jdir], lon[jdir], searchRadius);
+            proximitySearch.closestPointWithinRadius(lat[jdir], lon[jdir], searchRadius);
         ASSERT_MSG(index.has_value(), "Dirac: no owned grid node found near requested point");
         auto view = atlas::array::make_view<double, 2>(field);
         view(*index, lev) = 1.0;
