@@ -148,7 +148,7 @@ namespace ijedi {
 
     // Call write method of child
     // --------------------------
-    io->writeBase(this->fieldSet());
+    io->writeBase(this->fieldSet());  //, eckit::LocalConfiguration(config));
 
     oops::Log::trace() << "ijedi::State::write done" << std::endl;
   }

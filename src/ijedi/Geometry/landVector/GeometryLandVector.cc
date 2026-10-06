@@ -83,6 +83,7 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
   ASSERT(lats.size() == elevations.size());
 
   int myRank = comm_.rank();
+  oops::Log::error() << "Proc  " << myRank << " running with " << comm_.size() << " procs" << std::endl;
 
   const size_t numPoints = lats.size();
   std::vector<atlas::PointXY> global_pts(numPoints);
@@ -93,13 +94,16 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
   // 2. Wrap global points into an UnstructuredGrid and partition them across tasks
   //atlas::UnstructuredGrid grid(global_pts);
   grid_ = atlas::UnstructuredGrid(global_pts);
-  atlas::grid::Partitioner partitioner("equal_regions", comm_.size());
-  atlas::grid::Distribution distribution = partitioner.partition(grid_);
 
-  // 3. Construct PointCloud functionspace WITH grid and distribution!
-  // THIS automatically configures the internal gather/scatter engine in Atlas
   eckit::LocalConfiguration fs_config;
   fs_config.set("mpi_comm", comm_.name());
+  //atlas::grid::Partitioner partitioner("equal_regions", comm_.size());
+  atlas::grid::Partitioner partitioner("equal_regions", fs_config);
+  
+  atlas::grid::Distribution distribution = partitioner.partition(grid_);
+  oops::Log::error() << "Here 3  " << std::endl;
+  // 3. Construct PointCloud functionspace WITH grid and distribution!
+  // THIS automatically configures the internal gather/scatter engine in Atlas
   functionSpace = atlas::functionspace::PointCloud(grid_, partitioner, fs_config);
 
   // 4. Create metadata fields on functionSpace

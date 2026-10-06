@@ -1,5 +1,6 @@
 add_subdirectory( ijedi )
 add_subdirectory( mains )
+add_subdirectory( land-apply_jedi_incr )
 
 # find cpplint.py provided by oops
 find_file( CPPLINT_PY oops_cpplint.py HINTS ${oops_BINDIR} )

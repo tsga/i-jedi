@@ -1776,6 +1776,14 @@ namespace ijedi
     md.vtype = "magnitude";
     addFieldMetadata(fieldsmetadata, nlev, md);
 
+    md.longName = "slc";
+    md.units = "none";
+    md.kind = "double";
+    md.tracer = "false";
+    md.levels = "4";
+    md.vtype = "magnitude";
+    addFieldMetadata(fieldsmetadata, nlev, md);    
+
     md.longName = "soilt";
     md.units = "none";
     md.kind = "double";

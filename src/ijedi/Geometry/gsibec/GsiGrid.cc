@@ -147,7 +147,7 @@ namespace ijedi
       return lc;
     };
     
-    std::vector<double> grid_yt_ar = {3. 0. -3.}; 
+    std::vector<double> grid_yt_ar = {3., 0., -3.}; 
 
     const auto build_yspace_config = [&](const std::string & grid_type) ->
                                      eckit::LocalConfiguration {

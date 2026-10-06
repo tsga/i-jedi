@@ -313,13 +313,13 @@ void IOLandVector::readVectorFields(const std::string pathFile,
     } else if (std::string(dimName) == params_.timeName.value().c_str()) {
       hasTim = true;
       timId = dimids[i];
-      ASSERT(dimSize == 1); // Only one time step is expected for this read
+      //--static file has time=12 ASSERT(dimSize == 1); // Only one time step is expected for this read
     }
   }
 
   // Ensure required dimensions were found
   ASSERT(hasLoc);
-  ASSERT(hasTim);
+  //ASSERT(hasTim);
   //ASSERT(hasLayer || layer_index == -1); // no layer dimension
   
   // Read the fields from the file
@@ -382,11 +382,17 @@ void IOLandVector::readVectorFields(const std::string pathFile,
                      nullptr),  // attributes (unused)
           "nc_inq_var");
 
-    ASSERT(ndims == 2 || ndims == 3);
+    ASSERT(ndims == 1 || ndims == 2 || ndims == 3);
 
      std::vector<double> values(field.size());
     // Ensure that the dimensions are in the expected order
-    if ( ndims == 2 ) {
+    if ( ndims == 1 ) {
+      ASSERT(vardimids[0] == locId);
+      //size_t start[1] = {0};
+      //size_t count[1] = {num_points};
+      //nc_rc(nc_get_vara_double(fileId, varId, start, count, values.data()), "nc_get_var_double " + fieldName);
+    }
+    else if ( ndims == 2 ) {
       ASSERT(vardimids[0] == timId && vardimids[1] == locId);
       //size_t start[2] = {0, 0};
       //size_t count[2] = {1, num_points};
@@ -400,9 +406,9 @@ void IOLandVector::readVectorFields(const std::string pathFile,
 
     nc_rc(nc_get_var_double(fileId, varId, values.data()), "nc_get_var_double " + fieldName);
     
-    numLayers = field.shape(1);
     // Create field and unpack data into it
     if (field.rank() == 2) {
+      numLayers = field.shape(1);
       // Standard multi-level or Rank-2 surface field [Points, layers]
       auto fieldView = atlas::array::make_view<double, 2>(field);
 
@@ -427,9 +433,10 @@ void IOLandVector::readVectorFields(const std::string pathFile,
   nc_rc(nc_close(fileId), "nc_close");
 }
 
-void IOLandVector::write(const atlas::FieldSet & fieldsVector,
+void IOLandVector::writeWithConfig(const atlas::FieldSet & fieldsVector,
                              const eckit::LocalConfiguration & fileionames,
-                             const eckit::LocalConfiguration & fileioscaling) const 
+                             const eckit::LocalConfiguration & fileioscaling,
+			     const eckit::LocalConfiguration & fullconfig) const 
 {
 
   util::Timer timer(classname(), "write");
@@ -512,8 +519,8 @@ void IOLandVector::write(const atlas::FieldSet & fieldsVector,
   oops::Log::info() << classname() << " 4" << std::endl;
   // Resolve the valid time dynamically
   util::DateTime validTime;
-  if (fieldsVector.metadata().has("time")) {
-    validTime = util::DateTime(fieldsVector.metadata().get<std::string>("time"));
+  if (fieldsVector.metadata().has("date time")) {
+    validTime = util::DateTime(fieldsVector.metadata().get<std::string>("date time"));
   } else if (fieldsVector.metadata().has("timestamp")) {
     validTime = util::DateTime(fieldsVector.metadata().get<std::string>("timestamp"));
   } else if (params_.dateTime.value() != boost::none) {
@@ -526,7 +533,7 @@ void IOLandVector::write(const atlas::FieldSet & fieldsVector,
   // Write to disk exclusively on rank 0
   if (geom_.getComm().rank() == 0) {
     //const util::DateTime dateTime(datTimeString);
-    this->writeVectorFields(fieldsSerial, globalPoints.size(), fileionames, fileioscaling);
+    this->writeVectorFields(fieldsSerial, globalPoints.size(), fileionames, fileioscaling, fullconfig);
   }
   oops::Log::trace() << classname() << " write done" << std::endl;
 
@@ -536,7 +543,8 @@ void IOLandVector::writeVectorFields(const atlas::FieldSet & fields,
                                              //const util::DateTime & time,
                                              size_t num_locations,
                                              const eckit::LocalConfiguration & ioNames,
-                                             const eckit::LocalConfiguration & ioScaling) const {
+                                             const eckit::LocalConfiguration & ioScaling,
+					     const eckit::LocalConfiguration & fullconfig) const {
   
   // NetCDF IDs
   // ----------
@@ -560,128 +568,173 @@ void IOLandVector::writeVectorFields(const atlas::FieldSet & fields,
 
   // Format the datetime string
   pathFile = time.formatString(pathFile);*/
+  if (fullconfig.has("member")) {
+      const int ensmember = fullconfig.getInt("member");
+      oops::Log::warning() << "writing output for ensemble member " << ensmember << std::endl;
+  else {
+      oops::Log::warning() << "Warnging! no ens member found. Ensure this is a deterministic run " << std::endl;
+  }
 
   std::string pathFile = params_.datapath.value() + "/" + params_.filename.value();
 
   // Replace member number (ensemble applciaitons)
-  util::stringfunctions::swapNameMember(params_.toConfiguration(), pathFile);
+  //util::stringfunctions::swapNameMember(params_.toConfiguration(), pathFile);
+  util::stringfunctions::swapNameMember(fullconfig, pathFile);
 
-  // Create a file to write fields into
-  // ----------------------------------
-  nc_rc(nc_create(pathFile.c_str(), NC_CLOBBER | NC_NETCDF4, &fileId), "nc_create" + pathFile);
-  oops::Log::warning() << "nc created" << std::endl;
+  bool update_existing_file = params_.update_existing_file.value();
 
-  // Set float precision for fields
-  // ------------------------------
-  const int floatPrecision = params_.floatPrecision.value();
-  const int ncPrec = (floatPrecision == 4) ? NC_FLOAT : NC_DOUBLE;
+  if (update_existing_file) { 
+      nc_rc(nc_open(pathFile.c_str(), NC_WRITE, &fileId), "nc_open" + pathFile);
+      oops::Log::warning() << "nc file opened for write" << std::endl;
 
-  const auto & dateTimeOpt = params_.dateTime.value();
-  util::DateTime time;
-  if (dateTimeOpt != boost::none) {
-    time = util::DateTime(dateTimeOpt.value());
+      // Ensure the fields that will be written have correct dims
+      oops::Log::info() << "In num locations " << num_locations << std::endl;
+      for (auto& field : fields) {
+
+        // Get IO name for this field
+        std::string fieldName = field.name();
+        if (ioNames.has(fieldName)) {
+          fieldName = ioNames.getString(field.name());
+        }
+        oops::Log::info() << "Field " << fieldName << std::endl;
+        oops::Log::info() << "Field Name: " << field.name() << "\n"
+                      << "  Rank:  " << field.rank() << "\n"
+                      << "  Size:  " << field.size() << "\n"
+                      << "  Shape: [";
+        for (atlas::idx_t i = 0; i < field.rank(); ++i) {
+            oops::Log::info() << field.shape(i) << (i + 1 < field.rank() ? ", " : "");
+        }
+        oops::Log::info() << "]" << std::endl;
+
+        ASSERT(field.shape(0) == num_locations);  // Ensure the field has the expected number of locations
+
+        if (field.rank() !=1 && field.rank() != 2) {
+          ABORT("IOLandVector::writeVectorFields - Unsupported field rank: " + std::to_string(field.rank()));
+        }
+	// Get the variable ID for this field
+        nc_rc(nc_inq_varid(fileId, fieldName.c_str(), &fIv), "Inquire vari id" + fieldName);
+        // Insert field into the fieldIvs map
+        fieldIvs[field.name()] = fIv;
+
+      }
   } else {
-    ABORT("invalid datetime for write");
+      // Create a file to write fields into
+      // ----------------------------------
+      nc_rc(nc_create(pathFile.c_str(), NC_CLOBBER | NC_NETCDF4, &fileId), "nc_create" + pathFile);
+      oops::Log::warning() << "nc created" << std::endl;
+
+      // Set float precision for fields
+      // ------------------------------
+      const int floatPrecision = params_.floatPrecision.value();
+      const int ncPrec = (floatPrecision == 4) ? NC_FLOAT : NC_DOUBLE;
+
+      const auto & dateTimeOpt = params_.dateTime.value();
+      util::DateTime time;
+      if (dateTimeOpt != boost::none) {
+        time = util::DateTime(dateTimeOpt.value());
+      } else {
+        ABORT("invalid datetime for write");
+      }
+
+      //Get time in seconds since epoch
+      const util::DateTime epoch("1970-01-01T00:00:00Z");
+      const util::Duration duration = time - epoch;
+      int seconds_since_epoch = duration.toSeconds();
+
+      nc_rc(nc_def_dim(fileId, params_.locationName.value().c_str(), num_locations, &locId), "nc_def_dim (location)");
+      nc_rc(nc_def_dim(fileId, params_.layerName.value().c_str(), num_layers, &layerId), "nc_def_dim (layer)");
+      nc_rc(nc_def_dim(fileId, params_.timeName.value().c_str(), nTim, &timId), "nc_def_dim (time)");
+
+      // Write the dimension variables: only time for now
+      nc_rc(nc_def_var(fileId, params_.timeName.value().c_str(), NC_INT, 1, &timId, &fIv),
+            "nc_def_var (tim)");
+      nc_rc(nc_put_att_text(fileId, fIv, "long name", strlen("time"), "time"),
+            "nc_put_att_text (long name time)");
+      nc_rc(nc_put_att_text(fileId, fIv, "units", strlen("seconds since 1970-01-01 00:00:00"), "seconds since 1970-01-01 00:00:00"),
+            "nc_put_att_text (units time)");
+      fieldIvs[params_.timeName.value()] = fIv;
+
+      // Define some categories of dimension IDs for fields
+      // --------------------------------------------------
+      
+      // Define all the fields that will be written
+      // ------------------------------------------
+      oops::Log::info() << "In num locations " << num_locations << std::endl;
+      for (auto& field : fields) {
+        
+        // Get IO name for this field
+        std::string fieldName = field.name();
+        if (ioNames.has(fieldName)) {
+          fieldName = ioNames.getString(field.name());
+        }
+        oops::Log::info() << "Field " << fieldName << std::endl;
+        oops::Log::info() << "Field Name: " << field.name() << "\n"
+                      << "  Rank:  " << field.rank() << "\n"
+                      << "  Size:  " << field.size() << "\n"
+                      << "  Shape: [";
+        for (atlas::idx_t i = 0; i < field.rank(); ++i) {
+            oops::Log::info() << field.shape(i) << (i + 1 < field.rank() ? ", " : "");
+        }
+        oops::Log::info() << "]" << std::endl;
+
+        ASSERT(field.shape(0) == num_locations);  // Ensure the field has the expected number of locations
+
+        // Get dimensions for this field 
+        //const auto &dims = field.shape();
+
+        std::vector<int> fieldDims; // = {timId, locId};  // only one layer written out
+        // Create field and unpack data into it
+        if (field.rank() == 2) {
+          fieldDims = {timId, layerId, locId};
+        } else if (field.rank() == 1) {
+          fieldDims = {timId, locId};
+        } else {
+          ABORT("IOLandVector::writeVectorFields - Unsupported field rank: " + std::to_string(field.rank()));
+        }
+
+/* // Look for fieldname in the iofile configuration and use the value if key found
+        const std::string fieldLong = field.name();
+        const char * fieldLongC = fieldLong.c_str();
+        
+        std::string fieldName = fieldLong;
+        if (ioNames.has(fieldName)) {
+          fieldName = ioNames.getString(fieldLong);
+        }*/
+
+        // Define the field in the file
+        nc_rc(nc_def_var(fileId, fieldName.c_str(), ncPrec, fieldDims.size(), fieldDims.data(), &fIv), "nc_def_var " + fieldName);
+
+        // Fallback defaults if metadata keys are missing
+        std::string unitsStr = "unknown";
+        std::string longNameStr = field.name();
+
+        // Extract values dynamically if Atlas has them populated
+        if (field.metadata().has("units")) {
+          unitsStr = field.metadata().get<std::string>("units");
+        }
+        if (field.metadata().has("long_name")) {
+          longNameStr = field.metadata().get<std::string>("long_name");
+        }
+
+        const char * units = unitsStr.c_str();
+        const char * longNameC = longNameStr.c_str();
+
+        // Write to NetCDF
+        nc_rc(nc_put_att_text(fileId, fIv, "units", strlen(units), units), "nc_put_att_text " + fieldName + " units");
+        nc_rc(nc_put_att_text(fileId, fIv, "long_name", strlen(longNameC), longNameC), 
+              "nc_put_att_text " + fieldName + " long_name");
+
+        // Insert field into the fieldIvs map
+        fieldIvs[field.name()] = fIv;
+      }
+      // End definition mode
+      // -------------------
+      nc_rc(nc_enddef(fileId), "nc_enddef");
+
+      // Write coordinate data 
+      nc_rc(nc_put_var_int(fileId, fieldIvs[params_.timeName.value()], &seconds_since_epoch), "nc_put_var_int (time)");
   }
-
-  //Get time in seconds since epoch
-  const util::DateTime epoch("1970-01-01T00:00:00Z");
-  const util::Duration duration = time - epoch;
-  int seconds_since_epoch = duration.toSeconds();
-
-  nc_rc(nc_def_dim(fileId, params_.locationName.value().c_str(), num_locations, &locId), "nc_def_dim (location)");
-  nc_rc(nc_def_dim(fileId, params_.layerName.value().c_str(), num_layers, &layerId), "nc_def_dim (layer)");
-  nc_rc(nc_def_dim(fileId, params_.timeName.value().c_str(), nTim, &timId), "nc_def_dim (time)");
-
-  // Write the dimension variables: only time for now
-  nc_rc(nc_def_var(fileId, params_.timeName.value().c_str(), NC_INT, 1, &timId, &fIv),
-        "nc_def_var (tim)");
-  nc_rc(nc_put_att_text(fileId, fIv, "long name", strlen("time"), "time"),
-        "nc_put_att_text (long name time)");
-  nc_rc(nc_put_att_text(fileId, fIv, "units", strlen("seconds since 1970-01-01 00:00:00"), "seconds since 1970-01-01 00:00:00"),
-        "nc_put_att_text (units time)");
-  fieldIvs[params_.timeName.value()] = fIv;
-
-  // Define some categories of dimension IDs for fields
-  // --------------------------------------------------
   
-  // Define all the fields that will be written
-  // ------------------------------------------
-  oops::Log::info() << "In num locations " << num_locations << std::endl;
-  for (auto& field : fields) {
-    
-    // Get IO name for this field
-    std::string fieldNameI = field.name();
-    if (ioNames.has(fieldNameI)) {
-      fieldNameI = ioNames.getString(field.name());
-    }
-    oops::Log::info() << "Field " << fieldNameI << std::endl;
-    oops::Log::info() << "Field Name: " << field.name() << "\n"
-                  << "  Rank:  " << field.rank() << "\n"
-                  << "  Size:  " << field.size() << "\n"
-                  << "  Shape: [";
-    for (atlas::idx_t i = 0; i < field.rank(); ++i) {
-        oops::Log::info() << field.shape(i) << (i + 1 < field.rank() ? ", " : "");
-    }
-    oops::Log::info() << "]" << std::endl;
-
-    ASSERT(field.shape(0) == num_locations);  // Ensure the field has the expected number of locations
-
-    // Get dimensions for this field 
-    //const auto &dims = field.shape();
-
-    std::vector<int> fieldDims; // = {timId, locId};  // only one layer written out
-    // Create field and unpack data into it
-    if (field.rank() == 2) {
-      fieldDims = {timId, layerId, locId};
-    } else if (field.rank() == 1) {
-      fieldDims = {timId, locId};
-    } else {
-      ABORT("IOLandVector::readVectorFields - Unsupported field rank: " + std::to_string(field.rank()));
-    }
-
-    // Look for fieldname in the iofile configuration and use the value if key found
-    const std::string fieldLong = field.name();
-    const char * fieldLongC = fieldLong.c_str();
-    
-    std::string fieldName = fieldLong;
-    if (ioNames.has(fieldName)) {
-      fieldName = ioNames.getString(fieldLong);
-    }
-
-    // Define the field in the file
-    nc_rc(nc_def_var(fileId, fieldName.c_str(), ncPrec, fieldDims.size(), fieldDims.data(), &fIv), "nc_def_var " + fieldName);
-
-    // Fallback defaults if metadata keys are missing
-    std::string unitsStr = "unknown";
-    std::string longNameStr = fieldLong;
-
-    // Extract values dynamically if Atlas has them populated
-    if (field.metadata().has("units")) {
-      unitsStr = field.metadata().get<std::string>("units");
-    }
-    if (field.metadata().has("long_name")) {
-      longNameStr = field.metadata().get<std::string>("long_name");
-    }
-
-    const char * units = unitsStr.c_str();
-    const char * longNameC = longNameStr.c_str();
-
-    // Write to NetCDF
-    nc_rc(nc_put_att_text(fileId, fIv, "units", strlen(units), units), "nc_put_att_text " + fieldName + " units");
-    nc_rc(nc_put_att_text(fileId, fIv, "long_name", strlen(longNameC), longNameC), 
-          "nc_put_att_text " + fieldName + " long_name");
-
-    // Insert field into the fieldIvs map
-    fieldIvs[field.name()] = fIv;
-  }
-  // End definition mode
-  // -------------------
-  nc_rc(nc_enddef(fileId), "nc_enddef");
-
-  // Write coordinate data 
-  nc_rc(nc_put_var_int(fileId, fieldIvs[params_.timeName.value()], &seconds_since_epoch), "nc_put_var_int (time)");
-
   // Write the fields into the file
   // ------------------------------
   for (auto& field : fields) {
