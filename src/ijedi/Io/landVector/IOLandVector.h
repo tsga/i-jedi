@@ -106,6 +106,8 @@ class IOLandVector : public IoBase, private util::ObjectCounter<IOLandVector> {
   
   void read(atlas::FieldSet &, const eckit::LocalConfiguration &,
                   const eckit::LocalConfiguration &) const override;
+  void write(const atlas::FieldSet &, const eckit::LocalConfiguration &,
+                   const eckit::LocalConfiguration &) const override;
   void writeWithConfig(const atlas::FieldSet &, const eckit::LocalConfiguration &,
                    const eckit::LocalConfiguration &, const eckit::LocalConfiguration &) const override;
 

@@ -40,7 +40,7 @@ namespace ijedi
                        const eckit::LocalConfiguration &) const = 0;
     // optional config is empty by default, but can contain ensemble member info passed from increment.write
     virtual void writeWithConfig(const atlas::FieldSet &, const eckit::LocalConfiguration &, const eckit::LocalConfiguration &, 
-		       const eckit::LocalConfiguration & config = eckit::LocalConfiguration()) const = 0;
+		       const eckit::LocalConfiguration & config = eckit::LocalConfiguration()) const;
 
     // Child print method
     virtual void print(std::ostream &) const = 0;

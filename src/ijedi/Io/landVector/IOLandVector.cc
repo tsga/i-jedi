@@ -433,6 +433,12 @@ void IOLandVector::readVectorFields(const std::string pathFile,
   nc_rc(nc_close(fileId), "nc_close");
 }
 
+void IOLandVector::write(const atlas::FieldSet &, const eckit::LocalConfiguration &,
+                         const eckit::LocalConfiguration &) const 
+{  
+    throw eckit::NotImplemented("write is not implemented for this I/O type", Here());
+}
+
 void IOLandVector::writeWithConfig(const atlas::FieldSet & fieldsVector,
                              const eckit::LocalConfiguration & fileionames,
                              const eckit::LocalConfiguration & fileioscaling,
@@ -455,7 +461,7 @@ void IOLandVector::writeWithConfig(const atlas::FieldSet & fieldsVector,
    // 3. Gather all local point counts to determine rank offsets
   std::vector<size_t> localSizes(geom_.getComm().size(), 0);
   geom_.getComm().allGather(localSize, localSizes.begin(), localSizes.end());
-  oops::Log::info() << classname() << " 1" << std::endl;
+  
   // Convert points to contiguous doubles (2 values per point: lon, lat) for MPI Gatherv
   std::vector<double> localCoords;
   localCoords.reserve(localSize * 2);
@@ -479,7 +485,7 @@ void IOLandVector::writeWithConfig(const atlas::FieldSet & fieldsVector,
   std::vector<double> globalCoords(totalDoubles);
   geom_.getComm().gatherv(localCoords.data(), localCoords.size(),
                           globalCoords.data(), counts.data(), displs.data(), 0);
-  oops::Log::info() << classname() << " 2" << std::endl;
+  
   // 4. Construct globalPoints vector (populated on rank 0, empty on others)
   std::vector<atlas::PointXY> globalPoints;
   if (geom_.getComm().rank() == 0) {
@@ -492,7 +498,7 @@ void IOLandVector::writeWithConfig(const atlas::FieldSet & fieldsVector,
   // 5. Create serial FunctionSpace on rank 0
   // On rank 0, globalPoints contains all points; on other ranks, it is empty.
   atlas::functionspace::PointCloud serialFunctionSpace(globalPoints);
-  oops::Log::info() << classname() << " 3" << std::endl;
+  
   // 3. Allocate fieldsSerial using the serial function space factory
   // This guarantees all ranks have perfectly matching metadata, ranks, and levels
   atlas::FieldSet fieldsSerial;
@@ -516,7 +522,7 @@ void IOLandVector::writeWithConfig(const atlas::FieldSet & fieldsVector,
 
   // Gather distributed data smoothly from all parallel ranks back into Rank 0
   readFunctionSpace_.gather(fieldsVector, fieldsSerial);
-  oops::Log::info() << classname() << " 4" << std::endl;
+  
   // Resolve the valid time dynamically
   util::DateTime validTime;
   if (fieldsVector.metadata().has("date time")) {
@@ -571,7 +577,7 @@ void IOLandVector::writeVectorFields(const atlas::FieldSet & fields,
   if (fullconfig.has("member")) {
       const int ensmember = fullconfig.getInt("member");
       oops::Log::warning() << "writing output for ensemble member " << ensmember << std::endl;
-  else {
+  } else {
       oops::Log::warning() << "Warnging! no ens member found. Ensure this is a deterministic run " << std::endl;
   }
 
@@ -585,7 +591,7 @@ void IOLandVector::writeVectorFields(const atlas::FieldSet & fields,
 
   if (update_existing_file) { 
       nc_rc(nc_open(pathFile.c_str(), NC_WRITE, &fileId), "nc_open" + pathFile);
-      oops::Log::warning() << "nc file opened for write" << std::endl;
+      oops::Log::warning() << "nc file opened for write " << pathFile << std::endl;
 
       // Ensure the fields that will be written have correct dims
       oops::Log::info() << "In num locations " << num_locations << std::endl;
@@ -612,7 +618,7 @@ void IOLandVector::writeVectorFields(const atlas::FieldSet & fields,
           ABORT("IOLandVector::writeVectorFields - Unsupported field rank: " + std::to_string(field.rank()));
         }
 	// Get the variable ID for this field
-        nc_rc(nc_inq_varid(fileId, fieldName.c_str(), &fIv), "Inquire vari id" + fieldName);
+        nc_rc(nc_inq_varid(fileId, fieldName.c_str(), &fIv), "Inquire var id " + fieldName);
         // Insert field into the fieldIvs map
         fieldIvs[field.name()] = fIv;
 
@@ -621,7 +627,7 @@ void IOLandVector::writeVectorFields(const atlas::FieldSet & fields,
       // Create a file to write fields into
       // ----------------------------------
       nc_rc(nc_create(pathFile.c_str(), NC_CLOBBER | NC_NETCDF4, &fileId), "nc_create" + pathFile);
-      oops::Log::warning() << "nc created" << std::endl;
+      oops::Log::warning() << "nc created" << pathFile << std::endl;
 
       // Set float precision for fields
       // ------------------------------

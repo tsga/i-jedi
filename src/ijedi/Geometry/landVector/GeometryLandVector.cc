@@ -83,7 +83,7 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
   ASSERT(lats.size() == elevations.size());
 
   int myRank = comm_.rank();
-  oops::Log::error() << "Proc  " << myRank << " running with " << comm_.size() << " procs" << std::endl;
+  oops::Log::info() << "Proc  " << myRank << " running with " << comm_.size() << " procs" << std::endl;
 
   const size_t numPoints = lats.size();
   std::vector<atlas::PointXY> global_pts(numPoints);
@@ -101,7 +101,7 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
   atlas::grid::Partitioner partitioner("equal_regions", fs_config);
   
   atlas::grid::Distribution distribution = partitioner.partition(grid_);
-  oops::Log::error() << "Here 3  " << std::endl;
+  
   // 3. Construct PointCloud functionspace WITH grid and distribution!
   // THIS automatically configures the internal gather/scatter engine in Atlas
   functionSpace = atlas::functionspace::PointCloud(grid_, partitioner, fs_config);
