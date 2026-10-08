@@ -433,16 +433,15 @@ void IOLandVector::readVectorFields(const std::string pathFile,
   nc_rc(nc_close(fileId), "nc_close");
 }
 
-void IOLandVector::write(const atlas::FieldSet &, const eckit::LocalConfiguration &,
+/*void IOLandVector::write(const atlas::FieldSet &, const eckit::LocalConfiguration &,
                          const eckit::LocalConfiguration &) const 
 {  
     throw eckit::NotImplemented("write is not implemented for this I/O type", Here());
-}
+}*/
 
-void IOLandVector::writeWithConfig(const atlas::FieldSet & fieldsVector,
+void IOLandVector::write(const atlas::FieldSet & fieldsVector,
                              const eckit::LocalConfiguration & fileionames,
-                             const eckit::LocalConfiguration & fileioscaling,
-			     const eckit::LocalConfiguration & fullconfig) const 
+                             const eckit::LocalConfiguration & fileioscaling) const
 {
 
   util::Timer timer(classname(), "write");
@@ -539,7 +538,7 @@ void IOLandVector::writeWithConfig(const atlas::FieldSet & fieldsVector,
   // Write to disk exclusively on rank 0
   if (geom_.getComm().rank() == 0) {
     //const util::DateTime dateTime(datTimeString);
-    this->writeVectorFields(fieldsSerial, globalPoints.size(), fileionames, fileioscaling, fullconfig);
+    this->writeVectorFields(fieldsSerial, globalPoints.size(), fileionames, fileioscaling);  //, fullconfig);
   }
   oops::Log::trace() << classname() << " write done" << std::endl;
 
@@ -549,9 +548,8 @@ void IOLandVector::writeVectorFields(const atlas::FieldSet & fields,
                                              //const util::DateTime & time,
                                              size_t num_locations,
                                              const eckit::LocalConfiguration & ioNames,
-                                             const eckit::LocalConfiguration & ioScaling,
-					     const eckit::LocalConfiguration & fullconfig) const {
-  
+                                             const eckit::LocalConfiguration & ioScaling) const
+{ 
   // NetCDF IDs
   // ----------
   int fileId, fIv, locId, layerId, timId;
@@ -574,18 +572,18 @@ void IOLandVector::writeVectorFields(const atlas::FieldSet & fields,
 
   // Format the datetime string
   pathFile = time.formatString(pathFile);*/
-  if (fullconfig.has("member")) {
+  /*if (fullconfig.has("member")) {
       const int ensmember = fullconfig.getInt("member");
       oops::Log::warning() << "writing output for ensemble member " << ensmember << std::endl;
   } else {
       oops::Log::warning() << "Warnging! no ens member found. Ensure this is a deterministic run " << std::endl;
-  }
+  }*/
 
   std::string pathFile = params_.datapath.value() + "/" + params_.filename.value();
 
   // Replace member number (ensemble applciaitons)
   //util::stringfunctions::swapNameMember(params_.toConfiguration(), pathFile);
-  util::stringfunctions::swapNameMember(fullconfig, pathFile);
+  //util::stringfunctions::swapNameMember(fullconfig, pathFile);
 
   bool update_existing_file = params_.update_existing_file.value();
 

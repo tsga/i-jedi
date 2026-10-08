@@ -30,7 +30,6 @@ namespace ijedi
     virtual ~IoBase() {}
     void readBase(atlas::FieldSet &) const;
     void writeBase(const atlas::FieldSet &) const;
-    void writeBaseWithConfig(const atlas::FieldSet &, const eckit::LocalConfiguration &) const;
 
    private:
     // Child read/write methods
@@ -38,9 +37,6 @@ namespace ijedi
                       const eckit::LocalConfiguration &) const = 0;
     virtual void write(const atlas::FieldSet &, const eckit::LocalConfiguration &,
                        const eckit::LocalConfiguration &) const = 0;
-    // optional config is empty by default, but can contain ensemble member info passed from increment.write
-    virtual void writeWithConfig(const atlas::FieldSet &, const eckit::LocalConfiguration &, const eckit::LocalConfiguration &, 
-		       const eckit::LocalConfiguration & config = eckit::LocalConfiguration()) const;
 
     // Child print method
     virtual void print(std::ostream &) const = 0;
@@ -65,6 +61,11 @@ namespace ijedi
   // -------------------------------------------------------------------------------------------------
 
   class IoFactory;
+
+  // -------------------------------------------------------------------------------------------------
+
+  // Replace %{member}% in the io strings with the top-level member that OOPS sets
+  eckit::LocalConfiguration swapIoMember(const eckit::Configuration &);
 
   // -------------------------------------------------------------------------------------------------
 

@@ -99,7 +99,7 @@ namespace ijedi {
 
     // Create a Parameters object
     StateParameters params;
-    params.deserialize(config);
+    params.deserialize(swapIoMember(config));
 
     // Check that there are IO parameters
     if (params.io.value() == boost::none ||
@@ -130,7 +130,7 @@ namespace ijedi {
 
     // Create a Parameters object
     StateWriteParameters params;
-    params.deserialize(config);
+    params.deserialize(swapIoMember(config));
 
     // Check that there are IO parameters
     if (params.io.value() == boost::none ||
@@ -148,8 +148,7 @@ namespace ijedi {
 
     // Call write method of child
     // --------------------------
-    //io->writeBase(this->fieldSet());  //, eckit::LocalConfiguration(config));
-    io->writeBaseWithConfig(this->fieldSet(), eckit::LocalConfiguration(config));
+    io->writeBase(this->fieldSet());
 
     oops::Log::trace() << "ijedi::State::write done" << std::endl;
   }

@@ -1,3 +1,4 @@
+#include <string>
 #include <unordered_set>
 
 #include "ijedi/Geometry/Geometry.h"
@@ -5,6 +6,7 @@
 
 #include "oops/util/abor1_cpp.h"
 #include "oops/util/Logger.h"
+#include "oops/util/stringFunctions.h"
 
 namespace ijedi
 {
@@ -50,6 +52,28 @@ namespace ijedi
       throw std::runtime_error(name + " does not exist in ijedi::IoFactory");
     }
     return it->second->makeParameters();
+  }
+
+  // -------------------------------------------------------------------------------------------------
+
+  eckit::LocalConfiguration swapIoMember(const eckit::Configuration &config)
+  {
+    eckit::LocalConfiguration conf(config);
+    if (conf.has("member") && conf.has("io"))
+    {
+      eckit::LocalConfiguration io(conf, "io");
+      for (const std::string &key : io.keys())
+      {
+        if (io.isString(key))
+        {
+          std::string value = io.getString(key);
+          util::stringfunctions::swapNameMember(conf, value);
+          io.set(key, value);
+        }
+      }
+      conf.set("io", io);
+    }
+    return conf;
   }
 
   // -------------------------------------------------------------------------------------------------
@@ -110,21 +134,5 @@ namespace ijedi
   }
 
   // -------------------------------------------------------------------------------------------------
-
-  void IoBase::writeBaseWithConfig(const atlas::FieldSet &x, const eckit::LocalConfiguration &config) const
-  {
-    // Call write method from the child class
-    this->writeWithConfig(x, fieldIoNames_, fieldIoScaling_, config);
-  }
-
-  // -------------------------------------------------------------------------------------------------
- 
-  // Default implementation — just calls write()
-  void IoBase::writeWithConfig(const atlas::FieldSet & x,
-                             const eckit::LocalConfiguration & fileionames,
-                             const eckit::LocalConfiguration & fileioscaling,
-                             const eckit::LocalConfiguration & config) const {
-    this->write(x, fileionames, fileioscaling);
-  }
 
 }  // namespace ijedi

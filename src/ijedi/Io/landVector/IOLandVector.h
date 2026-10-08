@@ -108,22 +108,19 @@ class IOLandVector : public IoBase, private util::ObjectCounter<IOLandVector> {
                   const eckit::LocalConfiguration &) const override;
   void write(const atlas::FieldSet &, const eckit::LocalConfiguration &,
                    const eckit::LocalConfiguration &) const override;
-  void writeWithConfig(const atlas::FieldSet &, const eckit::LocalConfiguration &,
-                   const eckit::LocalConfiguration &, const eckit::LocalConfiguration &) const override;
-
  private:
   // Methods
   void print(std::ostream &) const override;
   template <typename T>
   void writeVector(const T & obj, const std::string & label,
                       const eckit::LocalConfiguration & fileionames,
-                      const eckit::LocalConfiguration & fileioscaling, 
-		      const eckit::LocalConfiguration & fullconfig) const;
+                      const eckit::LocalConfiguration & fileioscaling) const;
+                     //,const eckit::LocalConfiguration & fullconfig) const;
   void writeVectorFields(const atlas::FieldSet &, //const util::DateTime &,
                              size_t num_points,
                              const eckit::LocalConfiguration &,
-                             const eckit::LocalConfiguration &, 
-			     const eckit::LocalConfiguration &) const;
+                             const eckit::LocalConfiguration &) const;
+			     //const eckit::LocalConfiguration &) const;
   void readVectorFields(std::string pathFile,
                             atlas::FieldSet &, const util::DateTime &,
                             size_t, size_t,
