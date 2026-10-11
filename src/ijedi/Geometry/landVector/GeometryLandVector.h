@@ -96,6 +96,8 @@ class GeometryLandVector : public GeometryBase {
   atlas::Field area_;
   atlas::Field vertical_;
 
+  int ownedCount_ = 0;   // nG/npe (+1 for some)
+
 };
 
 }  // namespace ijedi

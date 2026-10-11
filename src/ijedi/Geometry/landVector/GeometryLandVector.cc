@@ -242,7 +242,7 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
       global_pts.begin() + start_idx,
       global_pts.begin() + start_idx + local_count
   );*/
-  std::vector<int> ghostMask;  //(numOwned,0); // 0 for owned, 1 for ghost
+  std::vector<int> ghostMask;  //(ownedCount_,0); // 0 for owned, 1 for ghost
   std::vector<atlas::gidx_t> globalIndices; // Original 1-based global index
   for (size_t g_idx = 0; g_idx < global_pts.size(); ++g_idx) {
     if (custom_partition[g_idx] == myRank) {
@@ -251,7 +251,8 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
         globalIndices.push_back(g_idx + 1); // 1-based global ID
     }
   }
-  size_t numOwned = rankPoints.size();  //local_count
+  
+  ownedCount_ = rankPoints.size();  //local_count
 
   auto isOwnedByThisRank = [&](atlas::PointXY target) -> bool {
     //if (cust_partition[rIndx] == myRank) return true;
@@ -263,7 +264,7 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
     if(!dist_vec.empty()){
       return 0.001 * std::min_element(dist_vec.begin(), dist_vec.end());  //km 
     } else {
-      throw eckit::BadParameter("GeometryLandVector: Error in distance comutation.", Here());
+      throw eckit::BadParameter("GeometryLandVector: Error in distance computation.", Here());
     }
   }
 
@@ -301,22 +302,11 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
   auto lonlatView = atlas::array::make_view<double, 2>(lonlat_);
   auto elevView   = atlas::array::make_view<double, 1>(elevationField_);
 
-  // Extract owned local points
-  /*size_t localIdx = 0;
-  for (size_t i = 0; i < numPoints; ++i) {
-    //if (distribution.partition(i) == comm_.rank()) {
-    if (cust_partition[i] == myRank()) {
-      lonlatView(localIdx, 0) = global_pts[i].x();  //rankPoints[localIdx].x();
-      lonlatView(localIdx, 1) = global_pts[i].y();
-      elevView(localIdx)      = elevations[gix];
-      localIdx++;
-    }
-  }*/
   for (size_t l_idx = 0; l_idx < rankPoints.size(); ++l_idx) {
     lonlatView(l_idx, 0) = rankPoints[l_idx].x();  //rankPoints[localIdx].x();
     lonlatView(l_idx, 1) = rankPoints[l_idx].y()
-    size_t true_g_idx = globalIndices[l_idx] - 1; // 0-based lookup into global elevation array
-    elev_view(l_idx) = elevations[true_g_idx];
+    size_t g_idx = globalIndices[l_idx] - 1; // 0-based lookup into global elevation array
+    elev_view(l_idx) = elevations[g_idx];
   }
 
   // Explicit 1D latitude and longitude fields for OOPS KD-tree search
@@ -332,50 +322,54 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
 
     // Create and populate global_index field on the FunctionSpace
   global_index_ = functionSpace.createField<atlas::gidx_t>(
-      atlas::option::name("global_index"));
+      atlas::option::name("global_index") | atlas::option::levels(0));
 
   auto gidxView = atlas::array::make_view<atlas::gidx_t, 1>(global_index_);
 
-  localIdx = 0;
-  for (size_t i = 0; i < numPoints; ++i) {
-    //if (distribution.partition(i) == myRank) {
-    if (cust_partition[i] == myRank()) {
-      // Note: Atlas uses 1-based global indexing by convention
-      gidxView(localIdx++) = static_cast<atlas::gidx_t>(i + 1); 
-    }
-  }
-
-  // Create remote_index field (0-based local index on the remote owning rank)
-  remote_index_ = functionSpace.createField<int>(atlas::option::name("remote_index"));
-  auto ridxView  = atlas::array::make_view<int, 1>(remote_index_);
-
   // Create ghost field (0 = owned node, 1 = ghost node)
-  ghost_ = functionSpace.createField<int>(atlas::option::name("ghost"));
+  ghost_ = functionSpace.createField<int>(atlas::option::name("ghost")
+		  | atlas::option::levels(0));
   auto ghostView  = atlas::array::make_view<int, 1>(ghost_);
 
+  // Create remote_index field (0-based local index on the remote owning rank)
+  remote_index_ = functionSpace.createField<int>(atlas::option::name("remote_index")
+		  | atlas::option::levels(0));
+  auto ridxView  = atlas::array::make_view<int, 1>(remote_index_);  
+
   // Create partition field (myRank for all local points)
-  partition_ = functionSpace.createField<int>(atlas::option::name("partition"));
+  partition_ = functionSpace.createField<int>(atlas::option::name("partition")
+		  | atlas::option::levels(0));
   auto partView  = atlas::array::make_view<int, 1>(partition_);
 
-  localIdx = 0;
-  for (size_t i = 0; i < numPoints; ++i) {
-    if (cust_partition[i] == myRank()) {  //if (distribution.partition(i) == myRank) {
-      ridxView(localIdx)  = static_cast<int>(localIdx);        // Index on owning rank
-      partView(localIdx) = comm_.rank();
-      ghostView(localIdx) = 0; // All points in local_pts are owned locally
-      localIdx++;
-    }
+  for (size_t i = 0; i < rankPoints.size(); ++i) {
+    gidxView(i) = static_cast<atlas::gidx_t>(globalIndices[i]); 
+    ghost_view(i) = ghostMask[i]; // 0 for i < ownedCount_, 1 for ghost
+    size_t g_idx = globalIndices[i] - 1;
+    int owner_rank = custom_partition[g_idx];
+    partView(i) = owner_rank;
+    if (owner_rank == myRank) {
+      // Owned point: local index on this rank is simply i
+      ridx_view(i) = static_cast<int>(i); //index on owning rank
+    } else {
+      // 0-based local index on owner_rank for ghost
+      // (Assuming rank offset calculation based on points_per_rank and remainder)
+      size_t start_idx = owner_rank * points_per_rank + std::min<size_t>(owner_rank, remainder);
+      size_t local_idx_on_owner = g_idx - start_idx;
+      ridx_view(i) = static_cast<int>(local_idx_on_owner); 
+    }   
   }
 
-  // 1. Create 'owned' field (1 for owned point, 0 for ghost point)
-  owned_ = functionSpace.createField<int>(atlas::option::name("owned"));
-  auto ownedView  = atlas::array::make_view<int, 1>(owned_);
-  area_ = functionSpace.createField<double>(atlas::option::name("area"));
-  auto areaView  = atlas::array::make_view<double, 1>(area_);
+  // Create 'owned' field (1 for owned point, 0 for ghost point)
+  owned_ = functionSpace.createField<int>(atlas::option::name("owned")
+		  | atlas::option::levels(0));
+  auto owned_view  = atlas::array::make_view<int, 1>(owned_);
+  area_ = functionSpace.createField<double>(atlas::option::name("area")
+		  | atlas::option::levels(0));
+  auto area_view  = atlas::array::make_view<double, 1>(area_);
 
-  for (size_t i = 0; i < localSize; ++i) {
-    ownedView(i) = 1;          // EVERY local point in this rank is owned
-    areaView(i) = 1.0;
+  for (size_t i = 0; i < rankPoints.size(); ++i) {
+    owned_view(i) = (ghost_view(i) == 0) ? 1 : 0;
+    area_view(i) = 1.0;
   }
 
   // Add ALL of them to geomFields
