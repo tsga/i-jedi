@@ -237,10 +237,21 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
   size_t start_idx = myRank * points_per_rank + std::min<size_t>(myRank, remainder);
   size_t local_count = points_per_rank + (myRank < remainder ? 1 : 0);
 
-  std::vector<atlas::PointXY> rankPoints(
+  std::vector<atlas::PointXY> rankPoints;
+  /*(
       global_pts.begin() + start_idx,
       global_pts.begin() + start_idx + local_count
-  );
+  );*/
+  std::vector<int> ghostMask;  //(numOwned,0); // 0 for owned, 1 for ghost
+  std::vector<atlas::gidx_t> globalIndices; // Original 1-based global index
+  for (size_t g_idx = 0; g_idx < global_pts.size(); ++g_idx) {
+    if (custom_partition[g_idx] == myRank) {
+        rankPoints.push_back(global_pts[g_idx]);
+        ghostMask.push_back(0); // Owned
+        globalIndices.push_back(g_idx + 1); // 1-based global ID
+    }
+  }
+  size_t numOwned = rankPoints.size();  //local_count
 
   auto isOwnedByThisRank = [&](atlas::PointXY target) -> bool {
     //if (cust_partition[rIndx] == myRank) return true;
@@ -256,12 +267,17 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
     }
   }
 
-  double R_halo = 1250.0  //km
+  double R_halo = 1250.0; //km
+  size_t numGhost = 0;
+
   // 3. Append distance-based ghost points within R_halo of owned points
-  for (const auto& pt : global_pts) {
-  //for (size_t i = 0; i < numPoints; ++i) {
+  for (size_t g_idx = 0; g_idx < global_pts.size(); ++g_idx) {
+      pt = global_pts[g_idx];  //for (const auto& pt : global_pts) {
       if (!isOwnedByThisRank(pt) && distanceToRankDomain(pt) <= R_halo) {
           rankPoints.push_back(pt); // Add as ghost point
+	  ghostMask.push_back(1); // Ghost
+	  numGhost++;
+	  globalIndices.push_back(g_idx + 1);
       }
   }
 
@@ -286,24 +302,23 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
   auto elevView   = atlas::array::make_view<double, 1>(elevationField_);
 
   // Extract owned local points
-  size_t localIdx = 0;
+  /*size_t localIdx = 0;
   for (size_t i = 0; i < numPoints; ++i) {
     //if (distribution.partition(i) == comm_.rank()) {
     if (cust_partition[i] == myRank()) {
       lonlatView(localIdx, 0) = global_pts[i].x();  //rankPoints[localIdx].x();
       lonlatView(localIdx, 1) = global_pts[i].y();
-      elevView(localIdx)      = elevations[i];
+      elevView(localIdx)      = elevations[gix];
       localIdx++;
     }
+  }*/
+  for (size_t l_idx = 0; l_idx < rankPoints.size(); ++l_idx) {
+    lonlatView(l_idx, 0) = rankPoints[l_idx].x();  //rankPoints[localIdx].x();
+    lonlatView(l_idx, 1) = rankPoints[l_idx].y()
+    size_t true_g_idx = globalIndices[l_idx] - 1; // 0-based lookup into global elevation array
+    elev_view(l_idx) = elevations[true_g_idx];
   }
-  /*for (size_t i = 0; i < local_count; ++i) {
-      lonlatView(i, 0) = rankPoints[i].x();
-      lonlatView(i, 1) = rankPoints[i].y();
-      elevView(localIdx)      = elevations[i+start_index];
-      localIdx++;
-    }
-  }  */
-  
+
   // Explicit 1D latitude and longitude fields for OOPS KD-tree search
   auto lat_ = functionSpace.createField<double>(atlas::option::name("latitude"));
   auto lon_ = functionSpace.createField<double>(atlas::option::name("longitude"));

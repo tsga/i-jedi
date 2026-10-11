@@ -76,6 +76,7 @@ class GeometryLandVector : public GeometryBase {
   atlas::FieldSet fields_;
  
   atlas::Grid grid_;
+  atlas::Mesh mesh_;
 
   int numLevels_ = 1;
 
