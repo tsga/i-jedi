@@ -30,6 +30,7 @@ geometry:
 #include "atlas/field/FieldSet.h"
 #include "atlas/functionspace/FunctionSpace.h"
 #include "atlas/grid/Grid.h"
+#include "atlas/parallel/GatherScatter.h"
 
 #include "oops/util/ObjectCounter.h"
 #include "oops/util/Printable.h"
@@ -81,22 +82,24 @@ class GeometryLandVector : public GeometryBase {
   int numLevels_ = 1;
 
   // Atlas field containers for coordinates
-  //atlas::Field lonlatField_;
-  //atlas::Field globalIndexField_;
   atlas::Field elevationField_;
   atlas::Field lat_;
   atlas::Field lon_;
 
   atlas::Field lonlat_;
   atlas::Field partition_; 
-  mutable atlas::Field ghost_;
+  //mutable 
+  atlas::Field ghost_;
   atlas::Field global_index_;
-  mutable atlas::Field remote_index_;
+  //mutable 
+  atlas::Field remote_index_;
   atlas::Field owned_;
   atlas::Field area_;
   atlas::Field vertical_;
 
   int ownedCount_ = 0;   // nG/npe (+1 for some)
+
+  //atlas::parallel::GatherScatter gather_scatter_;
 
 };
 

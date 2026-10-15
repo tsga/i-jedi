@@ -65,104 +65,6 @@ IOLandVector::~IOLandVector() {
   oops::Log::trace() << classname() << " destructor done" << std::endl;
 }
 
-/*void IOLandVector::read(atlas::FieldSet &x, const eckit::LocalConfiguration &fileionames,
-                        const eckit::LocalConfiguration &fileioscaling) const 
-{
-  util::Timer timer(classname(), "read");
-  oops::Log::trace() << classname() << " read started" << std::endl;
-
-  auto readFunctionSpace = atlas::functionspace::PointCloud(geom_.functionSpace());
-  const size_t localSize = readFunctionSpace.size();
-  // Calculate global count of grid points
-  size_t globalSize = 0;
-  geom_.getComm().allReduce(localSize, globalSize, eckit::mpi::Operation::SUM);
-
-  // Create serial FieldSet on Rank 0
-  atlas::FieldSet fieldsSerial;
-  // Construct point cloud containing all global points on Rank 0
-  std::vector<atlas::PointXY> globalPoints(globalSize); 
-  atlas::functionspace::PointCloud serialFunctionSpace(globalPoints);
-
-  for (const auto & field : x) {
-    atlas::Field fSerial = serialFunctionSpace.createField<double>(
-        atlas::option::name(field.name()) | atlas::option::levels(field.levels()));
-    fieldsSerial.add(fSerial);
-  }
-
-  // Read NetCDF data into fieldsSerial on Rank 0
-  size_t layer_index = 0;
-  const auto & filenamesOpt = params_.filenames.value();
-  if (filenamesOpt != boost::none) {
-      if (geom_.getComm().rank() == 0) {
-        for (const auto & filename : filenamesOpt.value()) {
-          util::DateTime dummyTime; 
-          this->readVectorFields(params_.datapath.value() + "/" + filename, 
-                                  fieldsSerial, dummyTime, globalSize, layer_index, 
-                                  fileionames, fileioscaling);
-        }
-    }
-  } else {
-    ABORT("IOLandVector::read: 'filenames' parameter is missing.");
-  }
-  
-  // 2. Extract global indices stored in Geometry to scatter values to local fields
-  //auto pc = atlas::functionspace::PointCloud(geom_.functionSpace());  
-  //const auto & gidxField = pc.field("global_index");  
-  const auto & gidxField = geom_.fields()["global_index"];
-  auto gidxView = atlas::array::make_view<atlas::gidx_t, 1>(gidxField);
-  // 3. Scatter fields from Rank 0 to all ranks for each field in x
-  for (auto & field : x) {
-    const std::string name = field.name();
-    const size_t levels = field.levels();
-
-    if (field.rank() == 2) {
-      // 2D Field: (nodes, levels)
-      std::vector<double> globalBuffer;
-      if (geom_.getComm().rank() == 0) {
-        auto serialView = atlas::array::make_view<double, 2>(fieldsSerial[name]);
-        globalBuffer.resize(globalSize * levels);
-        for (size_t g = 0; g < globalSize; ++g) {
-          for (size_t lev = 0; lev < levels; ++lev) {
-            globalBuffer[g * levels + lev] = serialView(g, lev);
-          }
-        }
-      }
-
-      // Broadcast global data from Rank 0 to all processes
-      size_t totalDoubles = globalSize * levels;
-      geom_.getComm().broadcast(globalBuffer.data(), totalDoubles, 0);
-
-      // Extract local points using 1-based global index mapping
-      auto localView = atlas::array::make_view<double, 2>(field);
-      for (size_t i = 0; i < localSize; ++i) {
-        atlas::gidx_t gidx = gidxView(i) - 1; // Convert 1-based to 0-based
-        for (size_t lev = 0; lev < levels; ++lev) {
-          localView(i, lev) = globalBuffer[gidx * levels + lev];
-        }
-      }
-    } 
-    else if (field.rank() == 1) {
-      // 1D Field: (nodes)
-      std::vector<double> globalBuffer(globalSize);
-      if (geom_.getComm().rank() == 0) {
-        auto serialView = atlas::array::make_view<double, 1>(fieldsSerial[name]);
-        for (size_t g = 0; g < globalSize; ++g) {
-          globalBuffer[g] = serialView(g);
-        }
-      }
-
-      geom_.getComm().broadcast(globalBuffer.data(), globalSize, 0);
-
-      auto localView = atlas::array::make_view<double, 1>(field);
-      for (size_t i = 0; i < localSize; ++i) {
-        atlas::gidx_t gidx = gidxView(i) - 1;
-        localView(i) = globalBuffer[gidx];
-      }
-    }
-  }
-
-  oops::Log::info() << classname() << " read done" << std::endl;
-}*/
 
 void IOLandVector::read(atlas::FieldSet &x, const eckit::LocalConfiguration &fileionames,
                             const eckit::LocalConfiguration &fileioscaling) const 
@@ -171,67 +73,53 @@ void IOLandVector::read(atlas::FieldSet &x, const eckit::LocalConfiguration &fil
   oops::Log::trace() << classname() << " read started" << std::endl;
 
   // 1. Get your parallel FunctionSpace handle
-  auto readFunctionSpace_ = atlas::functionspace::PointCloud(geom_.functionSpace());
-  const size_t localSize = readFunctionSpace_.size();
-  std::vector<atlas::PointXY> localPoints(localSize);
-  const auto & lonlatField = readFunctionSpace_.lonlat();
-  auto lonlatView = atlas::array::make_view<double, 2>(lonlatField);
-  for (size_t i = 0; i < localSize; ++i) {
-    localPoints[i] = atlas::PointXY(lonlatView(i, 0), lonlatView(i, 1));
-  }
-  /*for (atlas::idx_t i = 0; i < localSize; ++i) {
-    atlas::PointLonLat p = readFunctionSpace_.lonlat(i);
-    localPoints[i] = atlas::PointXY(p.lon(), p.lat());
-  }*/
-  
-  // 3. Gather all local point counts to determine rank offsets
-  std::vector<size_t> localSizes(geom_.getComm().size(), 0);
-  geom_.getComm().allGather(localSize, localSizes.begin(), localSizes.end());
+  auto fs = atlas::functionspace::PointCloud(geom_.functionSpace()); //x.field(0).functionspace());
 
-  // Convert points to contiguous doubles (2 values per point: lon, lat) for MPI Gatherv
-  std::vector<double> localCoords;
-  localCoords.reserve(localSize * 2);
-  for (const auto &p : localPoints) {
-    localCoords.push_back(p.x());
-    localCoords.push_back(p.y());
+  // 1. Get the global_index field from the Geometry's fieldSet or create/access it via FunctionSpace
+  atlas::Field globalIndexField = geom_.fields().field("global_index");
+
+  // 2. Make a view on the global_index field (type atlas::gidx_t)
+  auto localGidx = atlas::array::make_view<atlas::gidx_t, 1>(globalIndexField);
+
+  // 3. Populate the double __gidx field for gather
+  atlas::Field gidxField = fs.createField<double>(
+    atlas::option::name("__gidx") | atlas::option::levels(1));
+
+  auto gv = atlas::array::make_view<double, 2>(gidxField);
+  for (atlas::idx_t n = 0; n < fs.size(); ++n) {
+    gv(n, 0) = static_cast<double>(localGidx(n));
   }
 
-  std::vector<int> counts(geom_.getComm().size());
-  std::vector<int> displs(geom_.getComm().size(), 0);
-  int totalDoubles = 0;
+  atlas::Field globalGidxField = fs.createField<double>(
+      atlas::option::name("__gidx") | atlas::option::levels(1)
+      | atlas::option::global());
+  fs.gather(gidxField, globalGidxField);  // collective
 
-  for (size_t r = 0; r < geom_.getComm().size(); ++r) {
-    counts[r] = static_cast<int>(localSizes[r] * 2);
-    if (r > 0) {
-      displs[r] = displs[r - 1] + counts[r - 1];
-    }
-    totalDoubles += counts[r];
-  }
+  auto gIdx = atlas::array::make_view<double, 2>(globalGidxField);
+  const int nGlobal = static_cast<int>(globalGidxField.shape(0));
 
-  std::vector<double> globalCoords(totalDoubles);
-  geom_.getComm().gatherv(localCoords.data(), localCoords.size(),
-                          globalCoords.data(), counts.data(), displs.data(), 0);
-
-  // 4. Construct globalPoints vector (populated on rank 0, empty on others)
-  std::vector<atlas::PointXY> globalPoints;
-  if (geom_.getComm().rank() == 0) {
-    globalPoints.reserve(totalDoubles / 2);
-    for (size_t i = 0; i < globalCoords.size(); i += 2) {
-      globalPoints.emplace_back(globalCoords[i], globalCoords[i + 1]);
-    }
+/*  // --- 2. Pre-allocate one global field per output field (all ranks). ---
+  std::vector<atlas::Field> globalFields;
+  globalFields.reserve(x.size());
+  for (const auto & field : x) {
+    globalFields.push_back(fs.createField<double>(
+        atlas::option::name(field.name())
+        | atlas::option::levels(field.shape(1))
+        | atlas::option::global()));
   }
 
   // 5. Create serial FunctionSpace on rank 0
-  // On rank 0, globalPoints contains all points; on other ranks, it is empty.
-  atlas::functionspace::PointCloud serialFunctionSpace(globalPoints);
-
+  atlas::functionspace::NodeColumns serialFunctionSpace(geom_.mesh_)
+*/
   // 3. Allocate fieldsSerial using the serial function space factory
   // This guarantees all ranks have perfectly matching metadata, ranks, and levels
   atlas::FieldSet fieldsSerial;
   for (const auto & field : x) {
     // Pass the matching metadata/options from the target field
-    atlas::Field fSerial = serialFunctionSpace.createField<double>(
-        atlas::option::name(field.name()) | atlas::option::levels(field.levels()));
+    atlas::Field fSerial = fs.createField<double>(
+        atlas::option::name(field.name()) 
+	| atlas::option::levels(field.levels())   // field.shape(1))
+	| atlas::option::global());
     fieldsSerial.add(fSerial);
   }
 
@@ -244,7 +132,7 @@ void IOLandVector::read(atlas::FieldSet &x, const eckit::LocalConfiguration &fil
       if (geom_.getComm().rank() == 0) {
         util::DateTime dummyTime; 
         this->readVectorFields(params_.datapath.value() + "/" + filename, 
-                                   fieldsSerial, dummyTime, globalPoints.size(), layer_index, fileionames, fileioscaling);
+                                   fieldsSerial, dummyTime, nGlobal, layer_index, fileionames, fileioscaling);
       }
     }
   } else {
@@ -253,7 +141,30 @@ void IOLandVector::read(atlas::FieldSet &x, const eckit::LocalConfiguration &fil
 
   // 5. Scatter the data globally
   // Since both function spaces share the exact same grid, this will now succeed seamlessly
-  readFunctionSpace_.scatter(fieldsSerial, x);
+  //--fs.scatter(fieldsSerial, x);
+
+  // --- 4. Scatter all global fields to distributed ranks (collective). ---
+  // Zero the distributed fields first. atlas::createField leaves memory
+  // uninitialised, and scatter only writes nodes whose global index is present
+  // in the gathered global field. With the northern-fold / periodic mesh, some
+  // owned nodes are not covered by the gather/scatter round-trip; without this
+  // they would retain heap garbage, which is then summed by reductions
+  // (e.g. normField over exclude_halo) and makes results non-reproducible.
+  for (auto & field : x) {
+    auto v = atlas::array::make_view<double, 2>(field);
+    v.assign(0.0);
+  }
+
+  int fi = 0;
+  for (auto & field : x) {
+    fs.scatter(fieldsSerial[fi], field);
+    ++fi;
+  }
+
+  // Halo exchange to fill ghost nodes from their owning ranks
+  for (auto & field : x) {
+    atlas::functionspace::PointCloud(field.functionspace()).haloExchange(field);
+  }
   
   oops::Log::info() << classname() << " read done" << std::endl;
 }
