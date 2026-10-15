@@ -319,139 +319,72 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
   atlas::grid::Partitioner partitioner("equal_regions", fs_config); 
   atlas::grid::Distribution distribution(grid_, partitioner);
 
-  functionSpace = atlas::functionspace::PointCloud(grid_, partitioner, fs_config);
+  functionSpace_ = atlas::functionspace::PointCloud(grid_, partitioner, fs_config);
 
-  const size_t localSize = functionSpace.size();
+  lonlat_ = functionSpace_.lonlat();
+  ghost_ = functionSpace_.ghost();
+  global_index_ = functionSpace_.global_index();
+  remote_index_ = functionSpace_.remote_index();
+  partition_ = functionSpace_.partition();
 
-/*  lonlat_ = functionSpace.createField<double>(
-      atlas::option::name("lonlat") | atlas::option::variables(2));
   auto lonlatView = atlas::array::make_view<double, 2>(lonlat_);
-  global_index_ = functionSpace.createField<atlas::gidx_t>(
-      atlas::option::name("global_index") | atlas::option::levels(0));
   auto gidxView = atlas::array::make_view<atlas::gidx_t, 1>(global_index_);
-  ghost_ = functionSpace.createField<int>(atlas::option::name("ghost")
-                  | atlas::option::levels(0));
-  auto ghostView  = atlas::array::make_view<int, 1>(ghost_);
-  // Create remote_index field (0-based local index on the remote owning rank)
-  remote_index_ = functionSpace.createField<atlas::idx_t>(atlas::option::name("remote_index")
-                  | atlas::option::levels(0));
-  auto ridxView  = atlas::array::make_view<atlas::idx_t, 1>(remote_index_);
-  // Create partition field (myRank for all local points)
-  partition_ = functionSpace.createField<int>(atlas::option::name("partition")
-                  | atlas::option::levels(0));
-  auto partView  = atlas::array::make_view<int, 1>(partition_);
-*/
-/*
-  for (size_t l_idx = 0; l_idx < rankPoints.size(); ++l_idx) {
-    lonlatView(l_idx, 0) = rankPoints[l_idx].x();  //rankPoints[localIdx].x();
-    lonlatView(l_idx, 1) = rankPoints[l_idx].y();
-  }
-   for (size_t i = 0; i < rankPoints.size(); ++i) {
-    gidxView(i) = static_cast<atlas::gidx_t>(globalIndices[i]);
-    ghostView(i) = ghostMask[i]; // 0 for i < ownedCount_, 1 for ghost
-    size_t g_idx = globalIndices[i] - 1;
-    int owner_rank = cust_partition[g_idx];
-    partView(i) = owner_rank;
-    if (owner_rank == myRank) {
-      // Owned point: local index on this rank is simply i
-      ridxView(i) = static_cast<int>(i); //index on owning rank
-    } else {
-      // 0-based local index on owner_rank for ghost
-      // (Assuming rank offset calculation based on points_per_rank and remainder)
-      size_t start_idx = owner_rank * points_per_rank + std::min<size_t>(owner_rank, remainder);
-      size_t local_idx_on_owner = g_idx - start_idx;
-      ridxView(i) = static_cast<int>(local_idx_on_owner);
+  auto partView = atlas::array::make_view<int,1>(partition_);
+ 
+  // Explicit 1D latitude and longitude fields, eg for KD-tree search
+  lat_ = functionSpace_.createField<double>(atlas::option::name("lat") | atlas::option::levels(1));
+  lon_ = functionSpace_.createField<double>(atlas::option::name("lon") | atlas::option::levels(1));
+  auto latView = atlas::array::make_view<double, 2>(lat_);
+  auto lonView = atlas::array::make_view<double, 2>(lon_);
+
+  elevationField_ = functionSpace_.createField<double>(atlas::option::name("height") | atlas::option::levels(1));
+  auto elevView   = atlas::array::make_view<double, 2>(elevationField_);
+  
+  for (size_t i = 0; i < functionSpace_.size(); ++i){
+    if (partView(i) == myRank){
+      atlas::gidx_t g_idx = gidxView(i) - 1;; // 0-based lookup into global elevation array
+      elevView(i, 0) = elevations[g_idx];  //TODO: use sorted elevation
+      latView(i, 0) = lonlatView(i, 1);
+      lonView(i,0) = lonlatView(i, 0);
     }
   }
 
-oops::Log::info() << "here 6" << std::endl;
-
-  elevationField_ = functionSpace.createField<double>(
-      atlas::option::name("height")
-      | atlas::option::levels(1));
-  auto elevView   = atlas::array::make_view<double, 2>(elevationField_);
-  for (size_t l_idx = 0; l_idx < rankPoints.size(); ++l_idx) {
-    size_t g_idx = globalIndices[l_idx] - 1; // 0-based lookup into global elevation array
-    elevView(l_idx, 0) = elevations[g_idx];
-  }
-comm_.barrier();
-oops::Log::info() << "here 7" << std::endl;
-
-  // Explicit 1D latitude and longitude fields for OOPS KD-tree search
-  lat_ = functionSpace.createField<double>(
-		  atlas::option::name("lat")
-		  | atlas::option::levels(1));
-  lon_ = functionSpace.createField<double>(
-		  atlas::option::name("lon")
-		  | atlas::option::levels(1));
-comm_.barrier();  
-oops::Log::info() << "here 8" << std::endl;
-  auto latView = atlas::array::make_view<double, 2>(lat_);
-  auto lonView = atlas::array::make_view<double, 2>(lon_);
-comm_.barrier();
-oops::Log::info() << "here 8.5" << std::endl;
-  for (size_t i = 0; i < localSize; ++i) {
-    lonView(i, 0) = rankPoints[i].x();
-    latView(i, 0) = rankPoints[i].y();
-  }
-comm_.barrier();
-oops::Log::info() << "here 9" << std::endl;
-
   // Create 'owned' field (1 for owned point, 0 for ghost point)
-  owned_ = functionSpace.createField<int>(atlas::option::name("owned")
-		  | atlas::option::levels(0));
-  auto owned_view  = atlas::array::make_view<int, 1>(owned_);
-  area_ = functionSpace.createField<double>(atlas::option::name("area")
-		  | atlas::option::levels(0));
-  auto area_view  = atlas::array::make_view<double, 1>(area_);
-
-  for (size_t i = 0; i < rankPoints.size(); ++i) {
-    size_t g_idx = globalIndices[i] - 1;
-    int owner_rank = cust_partition[g_idx];
-    owned_view(i) = (owner_rank == myRank) ? 1 : 0;  //ghostView(i) == 0) ? 1 : 0;
-    area_view(i) = (owner_rank == myRank) ? 1.0 : -1;
+  owned_ = functionSpace_.createField<int>(atlas::option::name("owned") | atlas::option::levels(1));
+  auto owned_view = atlas::array::make_view<int, 2>(owned_);
+  area_ = functionSpace_.createField<double>(atlas::option::name("area") | atlas::option::levels(1));
+  auto area_view = atlas::array::make_view<double, 2>(area_); 
+  for (size_t i = 0; i < functionSpace_.size(); ++i) {
+      if (partView(i) == myRank) {
+          owned_view(i, 0) = 1;
+          area_view(i, 0)  = 1.0;
+      } else {
+          owned_view(i, 0) = 0;
+          area_view(i, 0)  = -1.0;
+      }
   }
-*/
-
- lonlat_ = functionSpace.lonlat();
- ghost_ = functionSpace.ghost();
- global_index_ = functionSpace.global_index();
- remote_index_ = functionSpace.remote_index();
- partition_ = functionSpace.partition();
- //if (functionSpace.has_mask()) mask_ = functionSpace.mask();
-
-  comm_.barrier();
-oops::Log::info() << "here 10" << std::endl;  
-
-  // Add fields to geomFields
-  geomFields.add(lonlat_);
-/*  geomFields.add(lat_);
-  geomFields.add(lon_); 
-  geomFields.add(area_);
-  geomFields.add(owned_);*/
-  geomFields.add(global_index_); 
-  geomFields.add(remote_index_);
-  geomFields.add(ghost_);
-  geomFields.add(partition_);
-//  geomFields.add(elevationField_);
-comm_.barrier();
-oops::Log::info() << "here 11" << std::endl;
-/*  geomFields.add(functionSpace.lonlat());
-  geomFields.add(functionSpace.ghost());
-  geomFields.add(functionSpace.global_index());
-  geomFields.add(functionSpace.remote_index());
-  geomFields.add(functionSpace.partition());
-  //geomFields.add(functionSpace.mask());
-*/
-
-  functionSpace_ = functionSpace;
-  fields_ = geomFields; 
-comm_.barrier();
-oops::Log::info() << "here 11" << std::endl;
-
-  oops::Log::info() << "Registered fields in GeometryLandVector:" << std::endl;
-
-  oops::Log::info() << "=== GeometryData Compatibility Check ===" << std::endl;
+  
+  // do halo exchange
+  functionSpace_.haloExchange(elevationField_);
+  functionSpace_.haloExchange(lat_);
+  functionSpace_.haloExchange(lon_);
+  functionSpace_.haloExchange(owned_);
+  functionSpace_.haloExchange(area_);
+  
+  fields_.add(lonlat_);
+  fields_.add(global_index_);
+  fields_.add(remote_index_);
+  fields_.add(ghost_);
+  fields_.add(partition_);
+  fields_.add(elevationField_);  
+  fields_.add(lat_);
+  fields_.add(lon_); 
+  fields_.add(area_);
+  fields_.add(owned_);
+  
+  functionSpace = functionSpace_;
+  geomFields = fields_; 
+ 
   oops::Log::info() << "Fields present in geom.fields():" << std::endl;
   for (const auto & f : fields_) {
     oops::Log::info() << "  - " << f.name() 
@@ -460,77 +393,41 @@ oops::Log::info() << "here 11" << std::endl;
                       << (f.rank() > 1 ? ", " + std::to_string(f.shape(1)) : "") << "]" 
                       << std::endl;
   }
-comm_.barrier();
-oops::Log::info() << "here 15" << std::endl;
 
   oops::Log::info() << "=== GeometryLandVector Diagnostic ===" << std::endl;
-  oops::Log::info() << "  Local node count:  " << localNodeCount() << std::endl;
-  oops::Log::info() << "  Global node count: " << globalNodeCount() << std::endl;
   auto loccnt=localNodeCount();
   auto glbcnt=globalNodeCount();
-  if (comm_.rank() == (comm_.size() - 1)) {
-  std::cout << "  Local node count:  " << loccnt << std::endl;
-  std::cout << "  Global node count: " << glbcnt << std::endl;
-}
-  comm_.barrier();
-oops::Log::info() << "here 16" << std::endl;
+  if (comm_.rank() == 0 || comm_.rank() == comm_.size() - 1) {
+    std::cout << "Rank " << comm_.rank() << "  Local node count:  " << loccnt << std::endl;
+    std::cout << "Rank " << comm_.rank() << "  Global node count: " << glbcnt << std::endl;
+  }
 
-//  if (fields_.has("lonlat")) {
-    auto llView = atlas::array::make_view<double, 2>(fields_["lonlat"]);
-    if (localNodeCount() > 0) {
+  if (!fields_.has("lonlat")) {
+    oops::Log::error() << "CRITICAL: 'lonlat' field missing in fields_!" << std::endl;
+  }
+  auto llView = atlas::array::make_view<double, 2>(fields_["lonlat"]);
+  if (localNodeCount() > 0) {
       oops::Log::info() << "  Sample Point 0: Lon = " << llView(0, 0) 
                         << ", Lat = " << llView(0, 1) << std::endl;
       // Check for NaN or 0,0 coordinates
       ASSERT(!std::isnan(llView(0,0)) && !std::isnan(llView(0,1)));   //,"Geometry coordinates contain NaN!");
-    }
-//  } else {
-//    oops::Log::error() << "CRITICAL: 'lonlat' field missing in fields_!" << std::endl;
-//  }
-comm_.barrier();
-oops::Log::info() << "here 17" << std::endl;
-  // Diagnostic: Force test GeometryData's exact gather operation
-  atlas::Field f = geomFields["lonlat"];
-  oops::Log::info() << "  - " << f.name()
-                      << " | Rank: " << f.rank()
-                      << " | Shape: [" << f.shape(0)
-                      << (f.rank() > 1 ? ", " + std::to_string(f.shape(1)) : "") << "]"
-                      << std::endl;
-comm_.barrier();
-oops::Log::info() << "here 18" << std::endl;
-  auto nGlobal = static_cast<atlas::idx_t>(lats.size());
-  atlas::Field global_latlon = functionSpace_.createField<double>(
-      atlas::option::name("global_latlon")
-      | atlas::option::variables(2) 
-      | atlas::option::global());
-     // | atlas::option::shape(std::initializer_list<atlas::idx_t>{nGlobal, 2}));
-oops::Log::info() << "  - " << global_latlon.name()
-                      << " | Rank: " << global_latlon.rank()
-                      << " | Shape: [" << global_latlon.shape(0)
-                      << (global_latlon.rank() > 1 ? ", " + std::to_string(global_latlon.shape(1)) : "") << "]"
-                      << std::endl;
-  comm_.barrier();
-oops::Log::info() << "here 18.2" << std::endl;
+  }
+
+  atlas::Field global_latlon = functionSpace_.createField<double>(atlas::option::name("global_latlon") 
+		  | atlas::option::variables(2) | atlas::option::global());
   atlas::Field loc_latlon = functionSpace_.createField<double>(
-      atlas::option::name("loc_latlon")
-      | atlas::option::variables(2));
-auto locllView = atlas::array::make_view<double, 2>(loc_latlon);
-  for (size_t i = 0; i < localSize; ++i) {
+      atlas::option::name("loc_latlon") | atlas::option::variables(2));
+  auto locllView = atlas::array::make_view<double, 2>(loc_latlon);
+  for (size_t i = 0; i < functionSpace_.size(); ++i) {
     locllView(i, 0) = llView(i, 0);
     locllView(i, 1) = llView(i, 0);;
   }
-oops::Log::info() << "  - " << loc_latlon.name()
-                      << " | Rank: " << loc_latlon.rank()
-                      << " | Shape: [" << loc_latlon.shape(0)
-                      << (loc_latlon.rank() > 1 ? ", " + std::to_string(loc_latlon.shape(1)) : "") << "]"
-                      << std::endl;
+
   atlas::functionspace::PointCloud fsHalo(functionSpace_);
   fsHalo.haloExchange(loc_latlon);
   fsHalo.haloExchange(global_latlon);
-  comm_.barrier();
-oops::Log::info() << "here 19" << std::endl;
   functionSpace_.gather(loc_latlon, global_latlon);
-comm_.barrier();
-oops::Log::info() << "here 23" << std::endl;
+
   oops::Log::info() << ">>> GEOMETRY GATHER TEST RESULT <<<" << std::endl;
   oops::Log::info() << "Global gathered shape: " << global_latlon.shape(0) 
                     << " x " << global_latlon.shape(1) << std::endl;
@@ -538,8 +435,8 @@ oops::Log::info() << "here 23" << std::endl;
   if (comm_.rank() == 0) {
     ASSERT(global_latlon.shape(0) > 0); //, "Atlas functionSpace.gather() returned 0 points! GeometryData cannot build globalNodeTree_.");
   }
-comm_.barrier();
-oops::Log::info() << "here 25" << std::endl;
+  oops::Log::info() << "GeometryLandVector::GeometryLandVector created" << std::endl;
+
 }
 
 // -----------------------------------------------------------------------------
@@ -547,7 +444,7 @@ GeometryLandVector::GeometryLandVector(const GeometryLandVector & other)
     : comm_(other.comm_),
       functionSpace_(other.functionSpace_),
       fields_(other.fields_){}
-/*      lonlat_(other.lonlat_),
+      lonlat_(other.lonlat_),
       elevationField_(other.elevationField_),
       global_index_(other.global_index_),
       lat_(other.lat_),
@@ -557,7 +454,7 @@ GeometryLandVector::GeometryLandVector(const GeometryLandVector & other)
       remote_index_(other.remote_index_),
       owned_(other.owned_),
       area_(other.area_)  {}
-*/
+
 // -----------------------------------------------------------------------------
 GeometryLandVector::~GeometryLandVector() {}
 
