@@ -282,52 +282,16 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
   fs_config.set("mpi_comm", comm_.name());
   fs_config.set("halo_radius", R_halo);
 
-  grid_ = atlas::UnstructuredGrid(global_pts);
-  atlas::grid::Partitioner partitioner("equal_regions", fs_config);
-  atlas::grid::Distribution distribution(grid_, partitioner);
+  //grid_ = atlas::UnstructuredGrid(global_pts);
+  //atlas::grid::Partitioner partitioner("equal_regions", fs_config);
+  //atlas::grid::Distribution distribution(grid_, partitioner);
+  const atlas::UnstructuredGrid ugrid(global_pts);
+  const atlas::grid::Distribution distribution =
+      atlas::grid::Partitioner("equal_regions", nproc).partition(ugrid);
 
-  // assign contiguous chunks to ranks
-  // using custom partitioner
-  std::vector<int> cust_partition(num_points);
-  size_t current_idx = 0;
-  for (int rank = 0; rank < nproc; ++rank) {
-      size_t count = points_per_rank + (rank < remainder ? 1 : 0);
-      for (size_t i = 0; i < count; ++i) {
-          cust_partition[current_idx++] = rank;
-      }
-  }
-  // using 'equal regions' partitioner
   std::vector<int> rank_owning(num_points);
   for (int i = 0; i < num_points; ++i){
     rank_owning[i] = distribution.partition(i);
-  }
-
-  if (cust_partition != rank_owning) {
-    
-    oops::Log::warning() << "Warning! cust_partition not= rank_owning from partition " << std::endl;
-/*    auto it1 = cust_partition.begin();
-    auto it2 = rank_owning.begin();
-
-    oops::Log::info() << "Mismatched indices: " << std::endl;
-    while (true) {
-        // Find the next mismatch
-        auto p = std::mismatch(it1, cust_partition.end(), it2);
-        
-        // If it reached the end of v1, break
-        if (p.first == cust_partition.end()) break;
-
-        // Calculate and print the index using std::distance
-        oops::Log::info() << std::distance(cust_partition.begin(), p.first) << " ";
-
-        // Move past the current mismatch to keep searching
-        it1 = p.first + 1;
-        it2 = p.second + 1;
-    }
-    oops::Log::info() << "\n";
-    std::string errMsg = "GeometryLandVector: cust_partition != rank_owning";
-    oops::Log::error() << errMsg << std::endl;
-    throw eckit::Exception(errMsg, Here());
-*/
   }
 
   std::vector<atlas::PointXY> rank_points;
@@ -384,15 +348,7 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
 	  globalIdx.push_back(g_idx + 1);
 	  rank_lons.push_back(pt.x());
 	  rank_lats.push_back(pt.y());
-
           remoteIdx.push_back(static_cast<atlas::idx_t>(ownerLocalIdx[g_idx] + 1));  //local_idx_on_owner);
-          /*// 1-based local index on owner_rank for ghost
-          // (Assuming rank offset calculation based on points_per_rank and remainder)
-          int owner_rank = rank_owning[g_idx];  // cust_partition[g_idx];
-	  size_t start_idx = owner_rank * points_per_rank + std::min<size_t>(owner_rank, remainder);
-          size_t local_idx_on_owner = g_idx - start_idx + 1;
-	  remoteIdx.push_back(local_idx_on_owner);*/
-          
 	  partitions.push_back(rank_owning[g_idx]);
       }
   }
@@ -408,24 +364,31 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
   meshConf.set("mpi_comm", comm_.name());
 
   const atlas::mesh::MeshBuilder meshBuilder;
-  mesh_ = meshBuilder(rank_lons, rank_lats, ghosts,
+  atlas::Mesh mesh = meshBuilder(rank_lons, rank_lats, ghosts,
       globalIdx, remoteIdx, /*remote_index_base=*/1, partitions,
       /*tri_boundary_nodes=*/{}, /*tri_global_indices=*/{}, /*quadNodes*/{}, /*quadGidx*/{},
       meshConf);
-  atlas::mesh::actions::build_halo(mesh_, 1);
+  atlas::mesh::actions::build_halo(mesh, 1);
 
-  functionSpace_ = atlas::functionspace::NodeColumns(mesh_, fs_config);
-  //functionSpace_ = atlas::functionspace::PointCloud(grid_, partitioner, fs_config);
+  functionSpace_ = atlas::functionspace::NodeColumns(mesh, atlas::util::Config("mpi_comm", comm.name()));  //fs_config);
 
   lonlat_ = functionSpace_.lonlat();
   ghost_ = functionSpace_.ghost();
-  global_index_ = functionSpace_.global_index();
-  remote_index_ = functionSpace_.remote_index();
+  auto glb_idx = functionSpace_.global_index();
+  auto r_idx = functionSpace_.remote_index();
   partition_ = functionSpace_.partition();
 
   auto lonlatView = atlas::array::make_view<double, 2>(lonlat_);
-  auto gidxView = atlas::array::make_view<atlas::gidx_t, 1>(global_index_);
+  auto glbidxView = atlas::array::make_view<atlas::gidx_t, 1>(glb_idx);
   auto partView = atlas::array::make_view<int,1>(partition_);
+  auto ridxView = atlas::array::make_view<int, 1>(r_idx);
+
+  // add global_index field: current name is 'glb_idx
+  global_index_ = functionSpace_.createField<atlas::gidx_t>(atlas::option::name("global_index"));
+  // Create remote_index field (1-based local index on the remote owning rank)
+  remote_index_ = functionSpace_.createField<int>(atlas::option::name("remote_index"));  
+  auto global_index_view = atlas::array::make_view<atlas::gidx_t, 1>(global_index_);
+  auto remote_index_view  = atlas::array::make_view<int, 1>(remote_index_);
  
   // Explicit 1D latitude and longitude fields, eg for KD-tree search
   lat_ = functionSpace_.createField<double>(atlas::option::name("lat") | atlas::option::levels(1));
@@ -438,10 +401,12 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
   
   for (size_t i = 0; i < functionSpace_.size(); ++i){
     if (partView(i) == my_rank){
-      atlas::gidx_t g_idx = gidxView(i) - 1;; // 0-based lookup into global elevation array
+      atlas::gidx_t g_idx = glbidxView(i) - 1;; // 0-based lookup into global elevation array
       elevView(i, 0) = elevations[g_idx];  //TODO: use sorted elevation
       latView(i, 0) = lonlatView(i, 1);
       lonView(i,0) = lonlatView(i, 0);
+      global_index_view(i) = glbidxView(i);
+      remote_index_view(i) = ridxView(i);
     }
   }
 
@@ -466,6 +431,8 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
   functionSpace_.haloExchange(lon_);
   functionSpace_.haloExchange(owned_);
   functionSpace_.haloExchange(area_);
+  functionSpace_.haloExchange(global_index_);
+  functionSpace_.haloExchange(remote_index_);
   
   fields_.add(lonlat_);
   fields_.add(global_index_);
@@ -477,10 +444,10 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
   fields_.add(lon_); 
   fields_.add(area_);
   fields_.add(owned_);
-  
+
   functionSpace = functionSpace_;
   geomFields = fields_; 
- 
+
   oops::Log::info() << "Fields present in geom.fields():" << std::endl;
   for (const auto & f : fields_) {
     oops::Log::info() << "  - " << f.name() 
@@ -509,25 +476,33 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
       ASSERT(!std::isnan(llView(0,0)) && !std::isnan(llView(0,1)));   //,"Geometry coordinates contain NaN!");
   }
 
-  atlas::Field global_latlon = functionSpace_.createField<double>(atlas::option::name("global_latlon") 
-		  | atlas::option::variables(2) | atlas::option::global());
   atlas::Field loc_latlon = functionSpace_.createField<double>(
       atlas::option::name("loc_latlon") | atlas::option::variables(2));
+
+  atlas::Field global_latlon = functionSpace_.createField<double>(atlas::option::name("global_latlon") 
+		  | atlas::option::global());  //| atlas::option::variables(2));
+
   auto locllView = atlas::array::make_view<double, 2>(loc_latlon);
   for (size_t i = 0; i < functionSpace_.size(); ++i) {
     locllView(i, 0) = llView(i, 0);
     locllView(i, 1) = llView(i, 0);;
   }
 
-  atlas::functionspace::PointCloud fsHalo(functionSpace_);
+  atlas::functionspace::NodeColumns fsHalo(functionSpace_);
   fsHalo.haloExchange(loc_latlon);
-  fsHalo.haloExchange(global_latlon);
+  functionSpace_.haloExchange(global_latlon);
+comm_.barrier();
+oops::Log::info() << "here 22" << std::endl;
   functionSpace_.gather(loc_latlon, global_latlon);
+comm_.barrier();
+oops::Log::info() << "here 23" << std::endl;
 
   oops::Log::info() << ">>> GEOMETRY GATHER TEST RESULT <<<" << std::endl;
   oops::Log::info() << "Global gathered shape: " << global_latlon.shape(0) 
                     << " x " << global_latlon.shape(1) << std::endl;
 
+comm_.barrier();
+oops::Log::info() << "here 120" << std::endl;
   if (comm_.rank() == 0) {
     ASSERT(global_latlon.shape(0) > 0); //, "Atlas functionSpace.gather() returned 0 points! GeometryData cannot build globalNodeTree_.");
   }
