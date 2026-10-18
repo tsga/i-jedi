@@ -32,6 +32,8 @@ geometry:
 #include "atlas/grid/Grid.h"
 #include "atlas/parallel/GatherScatter.h"
 
+#include "atlas/util/KDTree.h"
+
 #include "oops/util/ObjectCounter.h"
 #include "oops/util/Printable.h"
 
@@ -78,6 +80,8 @@ class GeometryLandVector : public GeometryBase {
  
   atlas::Grid grid_;
   atlas::Mesh mesh_;
+  
+  atlas::util::IndexKDTree localCellCenterTree_; 
 
   int numLevels_ = 1;
 
@@ -98,6 +102,8 @@ class GeometryLandVector : public GeometryBase {
   atlas::Field vertical_;
 
   int ownedCount_ = 0;   // nG/npe (+1 for some)
+  int ownedMin_ = 0;
+  int ownedMax_ = 0;
 
   //atlas::parallel::GatherScatter gather_scatter_;
 

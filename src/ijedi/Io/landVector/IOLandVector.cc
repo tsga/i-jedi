@@ -74,6 +74,7 @@ void IOLandVector::read(atlas::FieldSet &x, const eckit::LocalConfiguration &fil
 
   // 1. Get your parallel FunctionSpace handle
   auto fs = atlas::functionspace::PointCloud(geom_.functionSpace()); //x.field(0).functionspace());
+  //auto fs = atlas::functionspace::NodeColumns(geom_.functionSpace());
 
   // 1. Get the global_index field from the Geometry's fieldSet or create/access it via FunctionSpace
   atlas::Field globalIndexField = geom_.fields().field("global_index");
@@ -164,6 +165,7 @@ void IOLandVector::read(atlas::FieldSet &x, const eckit::LocalConfiguration &fil
   // Halo exchange to fill ghost nodes from their owning ranks
   for (auto & field : x) {
     atlas::functionspace::PointCloud(field.functionspace()).haloExchange(field);
+    //atlas::functionspace::NodeColumns(field.functionspace()).haloExchange(field);
   }
   
   oops::Log::info() << classname() << " read done" << std::endl;
