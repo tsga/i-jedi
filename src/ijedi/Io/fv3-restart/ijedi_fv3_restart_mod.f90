@@ -634,13 +634,42 @@ real(kind=kind_real),          intent(in)    :: fv3_array(isd:, jsd:, :)
 real(kind=kind_real),          intent(inout) :: atlas_ptr(:,:)
 integer,                       intent(in)    :: npx, npy, isc, iec, jsc, jec, isd, ied, jsd, jed
 integer,                       intent(in)    :: ntile, ntiles, ngrid
-integer :: jl
+integer :: jl, i, j
+real(kind=kind_real), allocatable :: work(:,:)
 
+! Copy the edge of the compute domain into the FV3 halo on regional grids.
+! Needed because fv3_geom_nodes_to_atlas_nodes takes "boundary condition" nodes out of the FV3
+! data-domain halo, which FMS never fills and which atlas owns, so no halo exchange repairs it.
+allocate(work(isd:ied, jsd:jed))
 atlas_ptr = 0.0_kind_real
 do jl = 1, size(fv3_array, 3)
+  work = fv3_array(:,:,jl)
+  if (ntiles == 1) then
+    if (isc == 1) then
+      do i = isd, isc-1
+        work(i, jsc:jec) = work(isc, jsc:jec)
+      end do
+    end if
+    if (iec == npx-1) then
+      do i = iec+1, ied
+        work(i, jsc:jec) = work(iec, jsc:jec)
+      end do
+    end if
+    if (jsc == 1) then
+      do j = jsd, jsc-1
+        work(:, j) = work(:, jsc)
+      end do
+    end if
+    if (jec == npy-1) then
+      do j = jec+1, jed
+        work(:, j) = work(:, jec)
+      end do
+    end if
+  end if
   call fv3_geom_nodes_to_atlas_nodes(npx, npy, isc, iec, jsc, jec, isd, ied, jsd, jed, ntile, &
-                                     ntiles, ngrid, fv3_array(:,:,jl), atlas_ptr(jl,:))
+                                     ntiles, ngrid, work, atlas_ptr(jl,:))
 end do
+deallocate(work)
 
 end subroutine copy_fv3_to_atlas
 

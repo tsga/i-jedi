@@ -1,6 +1,8 @@
 #include <ostream>
 #include <string>
 
+#include "atlas/field.h"
+
 #include "eckit/exception/Exceptions.h"
 #include "oops/util/Logger.h"
 #include "oops/util/Timer.h"
@@ -67,6 +69,16 @@ namespace ijedi
     const eckit::LocalConfiguration runtimeConfig = makeRuntimeConfig(parameters_, geom_, x);
     ijedi_io_fv3_restart_read_f90(runtimeConfig, geom_.modelData(), x.get(),
                                   fileionames, fileioscaling);
+
+    // Halo-exchange the fields the Fortran reader just filled, as the MOM6 reader already does.
+    // Needed because the reader populates owned points only, so the halo keeps its allocated
+    // value and consumers with cross-subdomain stencils (the SABER interpolation blocks) read it.
+    for (auto &field : x) {
+      if (field.functionspace()) {
+        field.set_dirty();
+        field.haloExchange();
+      }
+    }
 
     oops::Log::trace() << classname() << " read state done" << std::endl;
   }

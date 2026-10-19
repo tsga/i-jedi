@@ -2,6 +2,10 @@
 # -------------------------
 add_subdirectory(mains)
 
+# Standalone unit tests
+# ---------------------
+add_subdirectory(unit)
+
 # Link the directory 'data' to the test directory of the build
 # ------------------------------------------------------------
 file(CREATE_LINK

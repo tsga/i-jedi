@@ -52,6 +52,13 @@ static std::map<std::string, std::vector<std::string>> cookbook() {
                                                    "AirPotentialTemperature_A"}},
       // tv: from t and q
       {"virtual_temperature",                     {"AirVirtualTemperature_A"}},
+      // t: from tv and q; needed when tv is the control variable
+      {"air_temperature",                         {"AirTemperature_B"}},
+      // o3mr: from o3 mole fraction; needed when the control variable is ppmv
+      // TODO(samueldegelia): re-enable once vader #421 is merged
+      // {"ozone_mass_mixing_ratio",                 {"OzoneMassMixingRatio_A"}},
+      // o3 mole fraction: from o3mr; lets the trajectory hold a variable the state does not
+      {"mole_fraction_of_ozone_in_air",           {"MoleFractionOfOzoneInAir_A"}},
       // sst: from t
       {"sea_surface_temperature",                 {"SeaSurfaceTemperature_A"}},
       // t_insitu: NL from thetao (sea_water_potential_temperature), salinity, depth, lat/lon
