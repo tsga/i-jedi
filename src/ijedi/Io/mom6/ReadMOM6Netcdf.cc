@@ -2,6 +2,7 @@
 
 #include <netcdf.h>
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,8 @@
 #include "eckit/mpi/Comm.h"
 
 #include "oops/util/Logger.h"
+
+#include "ijedi/Io/mom6/VelocityStagger.h"
 
 namespace ijedi {
 
@@ -41,6 +44,62 @@ std::string findDimName(int ncid,
       Here());
 }
 
+// Layout of one horizontal-structured variable, from its own dimensions.
+struct VarLayout {
+  int ni = 0, nj = 0, nz = 1;
+  bool hasTime = false;
+  bool hasZ = false;
+  bool xStaggered = false;  // on lonq/xq (u points)
+  bool yStaggered = false;  // on latq/yq (v points)
+};
+
+VarLayout inquireLayout(int ncid, int varid) {
+  int ndims = 0;
+  nc_inq_varndims(ncid, varid, &ndims);
+  std::vector<int> dimids(ndims);
+  nc_inq_vardimid(ncid, varid, dimids.data());
+  int unlimdim = -1;
+  nc_inq_unlimdim(ncid, &unlimdim);
+
+  VarLayout lay;
+  const std::set<std::string> xq = {"lonq", "xq"}, yq = {"latq", "yq"};
+  std::vector<size_t> lens;
+  for (int d = 0; d < ndims; ++d) {
+    char name[NC_MAX_NAME + 1];
+    size_t len = 0;
+    nc_inq_dim(ncid, dimids[d], name, &len);
+    const std::string dname(name);
+    if (d == 0 && (dimids[d] == unlimdim || dname == "Time" || dname == "time")) {
+      lay.hasTime = true;
+      continue;
+    }
+    if (d == ndims - 1) lay.xStaggered = xq.count(dname) > 0;
+    if (d == ndims - 2) lay.yStaggered = yq.count(dname) > 0;
+    lens.push_back(len);
+  }
+  ASSERT_MSG(lens.size() == 2 || lens.size() == 3,
+             "readMOM6Netcdf: expected ([z,] y, x) dimensions");
+  lay.ni = static_cast<int>(lens.back());
+  lay.nj = static_cast<int>(lens[lens.size() - 2]);
+  if (lens.size() == 3) {
+    lay.hasZ = true;
+    lay.nz = static_cast<int>(lens[0]);
+  }
+  return lay;
+}
+
+// Read the first time record of a variable into a [nz][nj][ni] buffer.
+std::vector<double> readStructured(int ncid, int varid, const VarLayout & lay) {
+  std::vector<double> buf(static_cast<size_t>(lay.nz) * lay.nj * lay.ni);
+  std::vector<size_t> start, count;
+  if (lay.hasTime) { start.push_back(0); count.push_back(1); }
+  if (lay.hasZ) { start.push_back(0); count.push_back(static_cast<size_t>(lay.nz)); }
+  start.push_back(0); count.push_back(static_cast<size_t>(lay.nj));
+  start.push_back(0); count.push_back(static_cast<size_t>(lay.ni));
+  ASSERT(nc_get_vara_double(ncid, varid, start.data(), count.data(), buf.data()) == NC_NOERR);
+  return buf;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -48,7 +107,8 @@ void readMOM6Netcdf(const std::vector<std::string> & filepaths,
                     atlas::FieldSet & x,
                     const std::vector<std::string> & fileVarNames,
                     const std::vector<double> & scalings,
-                    const eckit::mpi::Comm & comm) {
+                    const eckit::mpi::Comm & comm,
+                    const mom6::VelocityGridInfo * velGrid) {
   const bool isRoot = (comm.rank() == 0);
   const auto fs =
       atlas::functionspace::NodeColumns(x.field(0).functionspace());
@@ -125,8 +185,89 @@ void readMOM6Netcdf(const std::vector<std::string> & filepaths,
         }
       }
 
+      // C-grid velocity pairs: average faces to tracer points, then rotate
+      // grid-relative -> eastward/northward.  Velocities stored on h-points
+      // (e.g. written by i-jedi with "velocity grid: tracer") are already
+      // geographic and go through the generic path below.
+      std::set<int> handled;
+      for (const auto & pair : mom6::velocityPairs()) {
+        int iE = -1, iN = -1;
+        for (int f = 0; f < x.size(); ++f) {
+          if (fileVarNames[f].empty()) continue;
+          if (x.field(f).name() == pair.first)  iE = f;
+          if (x.field(f).name() == pair.second) iN = f;
+        }
+        int varidE = -1, varidN = -1;
+        const bool foundE = iE >= 0 &&
+            nc_inq_varid(ncid, fileVarNames[iE].c_str(), &varidE) == NC_NOERR;
+        const bool foundN = iN >= 0 &&
+            nc_inq_varid(ncid, fileVarNames[iN].c_str(), &varidN) == NC_NOERR;
+        if (!foundE && !foundN) continue;
+
+        VarLayout layE, layN;
+        if (foundE) layE = inquireLayout(ncid, varidE);
+        if (foundN) layN = inquireLayout(ncid, varidN);
+        const bool staggered = (foundE && layE.xStaggered) || (foundN && layN.yStaggered);
+        if (!staggered) continue;
+
+        if (!(foundE && foundN)) {
+          nc_close(ncid);
+          throw eckit::UserError(
+              "readMOM6Netcdf: C-grid velocity in " + filepath + " needs both " +
+              pair.first + " and " + pair.second + " to be requested and present",
+              Here());
+        }
+        ASSERT_MSG(velGrid != nullptr,
+                   "readMOM6Netcdf: C-grid velocity requires grid rotation info");
+        const int ni = velGrid->ni, nj = velGrid->nj;
+        const bool uSym = (layE.ni == ni + 1), vSym = (layN.nj == nj + 1);
+        ASSERT_MSG(layE.xStaggered && layN.yStaggered &&
+                   (uSym || layE.ni == ni) && layE.nj == nj &&
+                   (vSym || layN.nj == nj) && layN.ni == ni,
+                   "readMOM6Netcdf: unexpected C-grid velocity dimensions for " +
+                   fileVarNames[iE] + "/" + fileVarNames[iN] + " in " + filepath);
+
+        const int nLevels = x.field(iE).shape(1);
+        if (layE.nz != nLevels || layN.nz != nLevels) {
+          oops::Log::warning() << "readMOM6Netcdf: skipping C-grid velocity '"
+                               << fileVarNames[iE] << "'/'" << fileVarNames[iN]
+                               << "' from " << filepath
+                               << " (z dimension size mismatch)" << std::endl;
+          handled.insert(iE);
+          handled.insert(iN);
+          continue;
+        }
+
+        std::vector<double> u = readStructured(ncid, varidE, layE);
+        std::vector<double> v = readStructured(ncid, varidN, layN);
+        if (scalings[iE] != 0.0) for (auto & val : u) val *= scalings[iE];
+        if (scalings[iN] != 0.0) for (auto & val : v) val *= scalings[iN];
+
+        std::vector<double> uT, vT;
+        mom6::facesToTracer(u, v, ni, nj, nLevels, uSym, vSym, &uT, &vT);
+        mom6::gridToGeo(velGrid->cosRot, velGrid->sinRot, nLevels, &uT, &vT);
+
+        const size_t nh = static_cast<size_t>(nj) * ni;
+        auto gE = atlas::array::make_view<double, 2>(globalFields[iE]);
+        auto gN = atlas::array::make_view<double, 2>(globalFields[iN]);
+        for (int n = 0; n < nGlobal; ++n) {
+          const size_t flatIdx = static_cast<size_t>(gIdx(n, 0)) - 1;
+          for (int k = 0; k < nLevels; ++k) {
+            gE(n, k) = uT[k * nh + flatIdx];
+            gN(n, k) = vT[k * nh + flatIdx];
+          }
+        }
+        handled.insert(iE);
+        handled.insert(iN);
+        oops::Log::info() << "readMOM6Netcdf: " << pair.first << ", " << pair.second
+                          << " <- C-grid " << fileVarNames[iE] << ", " << fileVarNames[iN]
+                          << " (averaged to h-points, rotated) from " << filepath
+                          << std::endl;
+      }
+
       int fi = 0;
       for (const auto & field : x) {
+        if (handled.count(fi)) { ++fi; continue; }
         const std::string & fileVarName = fileVarNames[fi];
         const double scale = scalings[fi];
         const int nLevels = field.shape(1);

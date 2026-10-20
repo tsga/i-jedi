@@ -1,0 +1,72 @@
+# Read MOM6 C-grid (grid-relative, staggered) velocities, write them back
+# eastward/northward on h-points (tracer) and on the C-grid (native).
+# Checked against the analytic flow by tools/check_mom6_velocity.py.
+input geometry:
+  geometry_type: mom6
+  ocean_hgrid: data_generated/mom6/ocean_hgrid.nc
+  ocean_topog: data_generated/mom6/ocean_topog.nc
+  vertical geometry from: data_generated/mom6/MOM.res.nc
+  has northern fold: true
+  coarsen factor: 1
+  MOM_input:
+    NIGLOBAL: 72
+    NJGLOBAL: 35
+    NZ: 25
+    LAYOUT: [3, 2]
+    MINIMUM_DEPTH: 0.5
+
+output geometry:
+  geometry_type: mom6
+  ocean_hgrid: data_generated/mom6/ocean_hgrid.nc
+  ocean_topog: data_generated/mom6/ocean_topog.nc
+  vertical geometry from: data_generated/mom6/MOM.res.nc
+  has northern fold: true
+  coarsen factor: 1
+  MOM_input:
+    NIGLOBAL: 72
+    NJGLOBAL: 35
+    NZ: 25
+    LAYOUT: [3, 2]
+    MINIMUM_DEPTH: 0.5
+
+states:
+- input:
+    date: 2021-01-01T00:00:00Z
+    state variables: &velocity_vars
+    - sea_water_potential_temperature
+    - eastward_sea_water_velocity
+    - northward_sea_water_velocity
+    io:
+      filetype: mom6
+      datapath: data_generated/mom6
+      ocn_file: MOM.res.nc
+      field io names: &velocity_io_names
+        sea_water_potential_temperature: Temp
+        eastward_sea_water_velocity: u
+        northward_sea_water_velocity: v
+  output:
+    date: 2021-01-01T00:00:00Z
+    state variables: *velocity_vars
+    io:
+      filetype: mom6
+      datapath: data_generated/mom6
+      ocn_file: mom6_velocity_tracer.nc
+      velocity grid: tracer
+      field io names: *velocity_io_names
+- input:
+    date: 2021-01-01T00:00:00Z
+    state variables: *velocity_vars
+    io:
+      filetype: mom6
+      datapath: data_generated/mom6
+      ocn_file: MOM.res.nc
+      field io names: *velocity_io_names
+  output:
+    date: 2021-01-01T00:00:00Z
+    state variables: *velocity_vars
+    io:
+      filetype: mom6
+      datapath: data_generated/mom6
+      ocn_file: mom6_velocity_native.nc
+      velocity grid: native
+      field io names: *velocity_io_names

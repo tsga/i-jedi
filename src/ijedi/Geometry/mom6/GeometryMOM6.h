@@ -88,7 +88,9 @@ namespace ijedi
                          const std::vector<double> & lonUGlobal,
                          const std::vector<double> & latUGlobal,
                          const std::vector<double> & lonVGlobal,
-                         const std::vector<double> & latVGlobal);
+                         const std::vector<double> & latVGlobal,
+                         const std::vector<double> & cosRotGlobal,
+                         const std::vector<double> & sinRotGlobal);
 
     // Populate fields_ on functionSpace_ (JEDI unstructured) from global
     // arrays via jediPoints_
@@ -106,6 +108,8 @@ namespace ijedi
                      const std::vector<double> & latUGlobal,
                      const std::vector<double> & lonVGlobal,
                      const std::vector<double> & latVGlobal,
+                     const std::vector<double> & cosRotGlobal,
+                     const std::vector<double> & sinRotGlobal,
                      bool buildVerticalGeometry);
 
     // Distance from each JEDI point to the nearest land cell (metres)

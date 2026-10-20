@@ -41,6 +41,73 @@ def ice_concentration(lat2d):
     return np.maximum(arctic, antarctic)
 
 
+VELOCITY_SCALE = 0.1  # m/s
+
+
+def velocity_east_north(lon, lat):
+    """Smooth analytic surface flow: solid-body rotations about the polar axis
+    and about the (lon=0, lat=0) axis.  Well defined at the poles and has both
+    components, so a sign or ordering error in the rotation shows up."""
+    lam = np.deg2rad(lon)
+    phi = np.deg2rad(lat)
+    uE = VELOCITY_SCALE * (np.cos(phi) - np.sin(phi) * np.cos(lam))
+    vN = VELOCITY_SCALE * np.sin(lam)
+    return uE, vN
+
+
+def _xyz(lon, lat):
+    lam, phi = np.deg2rad(lon), np.deg2rad(lat)
+    return np.stack([np.cos(phi) * np.cos(lam), np.cos(phi) * np.sin(lam), np.sin(phi)], -1)
+
+
+def _velocity_xyz(lon, lat):
+    """velocity_east_north as a 3-D vector."""
+    lam, phi = np.deg2rad(lon), np.deg2rad(lat)
+    east = np.stack([-np.sin(lam), np.cos(lam), np.zeros_like(lam)], -1)
+    north = np.stack([-np.sin(phi) * np.cos(lam), -np.sin(phi) * np.sin(lam), np.cos(phi)], -1)
+    uE, vN = velocity_east_north(lon, lat)
+    return uE[..., None] * east + vN[..., None] * north
+
+
+def _tangent(p, a, b):
+    """Unit vector along chord a->b, projected on the tangent plane at p."""
+    t = b - a
+    t = t - np.sum(t * p, -1, keepdims=True) * p
+    return t / np.linalg.norm(t, axis=-1, keepdims=True)
+
+
+def cgrid_velocity(hgrid_nc, ni, nj):
+    """Grid-relative analytic velocity on non-symmetric MOM6 C-grid faces.
+
+    u on the east face of cell i (supergrid (2j+1, 2i+2)) is the component
+    along grid east, v on the north face of cell j (supergrid (2j+2, 2i+1))
+    the component along grid north.  Grid directions come from the faces' own
+    supergrid edges in 3-D, so they stay exact near the geographic pole.
+    Returns u, v of shape (nj, ni).
+    """
+    with netCDF4.Dataset(hgrid_nc) as ds:
+        x = ds["x"][:].data
+        y = ds["y"][:].data
+    xyz = _xyz(x, y)
+    jT = 2 * np.arange(nj) + 1
+    iT = 2 * np.arange(ni) + 1
+
+    # u face: grid north along the face edge, grid east = north x up
+    J, I = np.meshgrid(jT, iT + 1, indexing="ij")
+    p = xyz[J, I]
+    gnorth = _tangent(p, xyz[J - 1, I], xyz[J + 1, I])
+    geast = np.cross(gnorth, p)
+    u = np.sum(_velocity_xyz(x[J, I], y[J, I]) * geast, -1)
+
+    # v face: grid east along the face edge, grid north = up x east
+    J, I = np.meshgrid(jT + 1, iT, indexing="ij")
+    p = xyz[J, I]
+    geast = _tangent(p, xyz[J, I - 1], xyz[J, I + 1])
+    gnorth = np.cross(p, geast)
+    v = np.sum(_velocity_xyz(x[J, I], y[J, I]) * gnorth, -1)
+
+    return u, v
+
 def gen_mom6_restart(outdir):
     """Generate MOM.res.nc with analytically defined fields.
 
@@ -132,27 +199,22 @@ def gen_mom6_restart(outdir):
         LAND_FILL,
     )   # shape: (nz, nj, ni)
 
-    # ---- u: surface-trapped zonal flow; grid (Layer, lath, lonq) same shape -
-    u_surf = 0.1 * np.cos(np.deg2rad(lat2d))
-    u = np.where(
-        h > 1e-5,
-        (u_surf[np.newaxis, :, :]
-         * np.exp(-layer_z[:, np.newaxis, np.newaxis] / 200.0)),
-        LAND_FILL,
-    )   # shape: (nz, nj, ni)
+    # ---- u, v: analytic geographic flow on the MOM6 C-grid ------------------
+    # (uE, vN) is evaluated at each face position and projected on that face's
+    # grid direction, so i-jedi's face->h averaging and grid->geographic
+    # rotation can be checked against velocity_east_north().
+    # Masked faces are 0, as in a real MOM6 restart.
+    tmask = h > 1e-5                                          # (nz, nj, ni)
+    u_surf, v_surf = cgrid_velocity(os.path.join(outdir, "ocean_hgrid.nc"), ni, nj)
+    decay = np.exp(-layer_z / 200.0)[:, np.newaxis, np.newaxis]
 
-    # ---- v: weak gyre-like meridional flow with depth decay -----------------
-    lon2d = np.tile(lonh[np.newaxis, :], (nj, 1))
-    v_surf = (0.06
-              * np.sin(2.0 * np.deg2rad(lon2d))
-              * np.cos(np.deg2rad(lat2d))
-              * np.exp(-(lat2d / 65.0) ** 2))
-    v = np.where(
-        h > 1e-5,
-        (v_surf[np.newaxis, :, :]
-         * np.exp(-layer_z[:, np.newaxis, np.newaxis] / 250.0)),
-        LAND_FILL,
-    )   # shape: (nz, nj, ni); grid (Layer, latq, lonh)
+    u_mask = tmask & np.roll(tmask, -1, axis=2)               # periodic in i
+    u = np.where(u_mask, decay * u_surf, 0.0)                 # (Layer, lath, lonq)
+
+    v_mask = np.zeros_like(tmask)
+    v_mask[:, :-1, :] = tmask[:, :-1, :] & tmask[:, 1:, :]
+    v_mask[:, -1, :] = tmask[:, -1, :] & tmask[:, -1, ::-1]   # tripolar fold
+    v = np.where(v_mask, decay * v_surf, 0.0)                 # (Layer, latq, lonh)
 
     # ---- ave_ssh: small sinusoidal SSH with zero on land --------------------
     ave_ssh = np.where(

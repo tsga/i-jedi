@@ -58,6 +58,8 @@ list(APPEND ijedi_src_files
   Io/mom6/IoMOM6.h
   Io/mom6/ReadMOM6Netcdf.cc
   Io/mom6/ReadMOM6Netcdf.h
+  Io/mom6/VelocityStagger.cc
+  Io/mom6/VelocityStagger.h
   Io/mom6/WriteMOM6Netcdf.cc
   Io/mom6/WriteMOM6Netcdf.h
   Io/unstructured/IoUnstructured.cc

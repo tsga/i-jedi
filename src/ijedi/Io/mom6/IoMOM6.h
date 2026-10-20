@@ -41,6 +41,13 @@ namespace ijedi
     oops::OptionalParameter<std::string> fix_file{"fix_file",
                                                   "fix fields file name",
                                                   this};
+
+    // Layout of written velocities: "tracer" (eastward/northward at h-points)
+    // or "native" (grid-relative on the MOM6 C-grid, e.g. for an IAU increment).
+    // Reading auto-detects the layout from the file dimensions.
+    oops::Parameter<std::string> velocity_grid{"velocity grid",
+                                               "tracer or native",
+                                               "tracer", this};
   };
 
   // -------------------------------------------------------------------------------------------------
@@ -65,6 +72,7 @@ namespace ijedi
     const Geometry & geom_;
     std::vector<std::string> readFilepaths_;  // ordered: ocn, ice, fix
     std::string writeFilepath_;               // ocean file for write
+    bool nativeVelocity_ = false;             // write velocities on the C-grid
   };
 
   // -------------------------------------------------------------------------------------------------

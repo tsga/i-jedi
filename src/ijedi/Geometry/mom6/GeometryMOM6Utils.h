@@ -23,7 +23,9 @@ void readHgrid(const std::string & path,
                std::vector<double> * lonU,
                std::vector<double> * latU,
                std::vector<double> * lonV,
-               std::vector<double> * latV);
+               std::vector<double> * latV,
+               std::vector<double> * cosRot,
+               std::vector<double> * sinRot);
 
 void readTopog(const std::string & path,
                int niGlobal,

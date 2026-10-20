@@ -7,6 +7,8 @@
 
 #include "eckit/mpi/Comm.h"
 
+#include "ijedi/Io/mom6/VelocityStagger.h"
+
 namespace ijedi {
 
 /// Write an Atlas FieldSet to a MOM6-format NetCDF file.
@@ -22,10 +24,17 @@ namespace ijedi {
 /// @param nj            Global j-dimension (lath).
 /// @param nz            Number of vertical levels (Layer).
 /// @param comm          MPI communicator.
+/// @param nativeVelocity If true, velocity pairs are rotated to grid-relative
+///                       and interpolated to the MOM6 C-grid (u on lonq, v on
+///                       latq); otherwise written eastward/northward on h-points.
+/// @param velGrid        Grid rotation/mask info (root only), required when
+///                       nativeVelocity is set and a velocity pair is written.
 void writeMOM6Netcdf(const std::string & filepath,
                      const atlas::FieldSet & x,
                      const std::vector<std::string> & fileVarNames,
                      int ni, int nj, int nz,
-                     const eckit::mpi::Comm & comm);
+                     const eckit::mpi::Comm & comm,
+                     bool nativeVelocity = false,
+                     const mom6::VelocityGridInfo * velGrid = nullptr);
 
 }  // namespace ijedi

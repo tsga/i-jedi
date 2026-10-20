@@ -397,7 +397,9 @@ void GeometryMOM6::buildMom6Fields(const std::vector<double> & lonGlobal,
                                     const std::vector<double> & lonUGlobal,
                                     const std::vector<double> & latUGlobal,
                                     const std::vector<double> & lonVGlobal,
-                                    const std::vector<double> & latVGlobal)
+                                    const std::vector<double> & latVGlobal,
+                                    const std::vector<double> & cosRotGlobal,
+                                    const std::vector<double> & sinRotGlobal)
 {
   const int npts = iCount_ * jCount_;
   mom6Fields_ = atlas::FieldSet();
@@ -431,6 +433,8 @@ void GeometryMOM6::buildMom6Fields(const std::vector<double> & lonGlobal,
   atlas::Field fLatU  = addField("latu");
   atlas::Field fLonV  = addField("lonv");
   atlas::Field fLatV  = addField("latv");
+  atlas::Field fCosRot = addField("cos_rot");
+  atlas::Field fSinRot = addField("sin_rot");
 
   auto vLon   = atlas::array::make_view<double, 2>(fLon);
   auto vLat   = atlas::array::make_view<double, 2>(fLat);
@@ -439,6 +443,8 @@ void GeometryMOM6::buildMom6Fields(const std::vector<double> & lonGlobal,
   auto vDxT   = atlas::array::make_view<double, 2>(fDxT);
   auto vDyT   = atlas::array::make_view<double, 2>(fDyT);
   auto vAreaT = atlas::array::make_view<double, 2>(fAreaT);
+  auto vCosRot = atlas::array::make_view<double, 2>(fCosRot);
+  auto vSinRot = atlas::array::make_view<double, 2>(fSinRot);
   auto vLayerThickness = atlas::array::make_view<double, 2>(fLayerThickness);
   auto vLayerCenterDepth = atlas::array::make_view<double, 2>(fLayerCenterDepth);
   auto vVertCoord = atlas::array::make_view<double, 2>(fVertCoord);
@@ -470,6 +476,8 @@ void GeometryMOM6::buildMom6Fields(const std::vector<double> & lonGlobal,
       vLatU(n, 0)  = latUGlobal[gIdx];
       vLonV(n, 0)  = lonVGlobal[gIdx];
       vLatV(n, 0)  = latVGlobal[gIdx];
+      vCosRot(n, 0) = cosRotGlobal[gIdx];
+      vSinRot(n, 0) = sinRotGlobal[gIdx];
     }
   }
 }
@@ -491,6 +499,8 @@ void GeometryMOM6::buildFields(const std::vector<double> & lonGlobal,
                                 const std::vector<double> & latUGlobal,
                                 const std::vector<double> & lonVGlobal,
                                 const std::vector<double> & latVGlobal,
+                                const std::vector<double> & cosRotGlobal,
+                                const std::vector<double> & sinRotGlobal,
                                 bool buildVerticalGeometry)
 {
   const int npts = static_cast<int>(jediPoints_.size());  // owned + ghost
@@ -529,6 +539,10 @@ void GeometryMOM6::buildFields(const std::vector<double> & lonGlobal,
   atlas::Field fLonV  = addField("lonv");
   atlas::Field fLatV  = addField("latv");
   atlas::Field fAreaT = addField("areaT");  // MOM6-native alias for area
+  // Grid rotation (clockwise angle of grid north from true north) used to
+  // rotate C-grid velocities to/from eastward/northward
+  atlas::Field fCosRot = addField("cos_rot");
+  atlas::Field fSinRot = addField("sin_rot");
 
   atlas::Field fLayerThickness;
   atlas::Field fLayerCenterDepth;
@@ -600,6 +614,16 @@ void GeometryMOM6::buildFields(const std::vector<double> & lonGlobal,
       vLatU(n, 0)  = latUGlobal[gIdx];
       vLonV(n, 0)  = lonVGlobal[gIdx];
       vLatV(n, 0)  = latVGlobal[gIdx];
+    }
+  }
+
+  {
+    auto vCosRot = atlas::array::make_view<double, 2>(fCosRot);
+    auto vSinRot = atlas::array::make_view<double, 2>(fSinRot);
+    for (int n = 0; n < npts; ++n) {
+      const int gIdx = jediPoints_[n].second * niEff_ + jediPoints_[n].first;
+      vCosRot(n, 0) = cosRotGlobal[gIdx];
+      vSinRot(n, 0) = sinRotGlobal[gIdx];
     }
   }
 
@@ -1033,12 +1057,13 @@ GeometryMOM6::GeometryMOM6(const eckit::Configuration & conf,
   const std::string topogPath = conf.getString("ocean_topog");
   const bool buildVerticalGeometry = conf.has("vertical geometry from");
 
-  std::vector<double> lon, lat, dxT, dyT, areaT, lonU, latU, lonV, latV;
+  std::vector<double> lon, lat, dxT, dyT, areaT, lonU, latU, lonV, latV, cosRot, sinRot;
   {
     util::Timer timer("ijedi::GeometryMOM6", "readHgrid");
     mom6::readHgrid(hgridPath,
                     niGlobal_, njGlobal_, niEff_, njEff_, coarsenFactor_,
-                    &lon, &lat, &dxT, &dyT, &areaT, &lonU, &latU, &lonV, &latV);
+                    &lon, &lat, &dxT, &dyT, &areaT, &lonU, &latU, &lonV, &latV,
+                    &cosRot, &sinRot);
   }
 
   std::vector<double> depth, wet;
@@ -1108,7 +1133,7 @@ GeometryMOM6::GeometryMOM6(const eckit::Configuration & conf,
     util::Timer timer("ijedi::GeometryMOM6", "buildMom6Fields");
     buildMom6Fields(lon, lat, depth, wet, layerThickness, layerCenterDepth,
                     mask3d, dxT, dyT, areaT,
-                    lonU, latU, lonV, latV);
+                    lonU, latU, lonV, latV, cosRot, sinRot);
   }
 
   // 5. JEDI unstructured function space and fields (ocean + retained fringe)
@@ -1120,7 +1145,7 @@ GeometryMOM6::GeometryMOM6(const eckit::Configuration & conf,
     util::Timer timer("ijedi::GeometryMOM6", "buildFields");
     buildFields(lon, lat, depth, wet, layerThickness, layerCenterDepth,
                 mask3d, dxT, dyT, areaT, lonU, latU, lonV, latV,
-                buildVerticalGeometry);
+                cosRot, sinRot, buildVerticalGeometry);
   }
 
   // Release temporary global arrays now that local fieldsets are built.
@@ -1136,6 +1161,8 @@ GeometryMOM6::GeometryMOM6(const eckit::Configuration & conf,
   release(latU);
   release(lonV);
   release(latV);
+  release(cosRot);
+  release(sinRot);
   release(depth);
   release(wet);
   release(layerThickness);
@@ -1196,6 +1223,7 @@ GeometryMOM6::GeometryMOM6(const eckit::Configuration & conf,
     geomVariables.set("ni", niEff_);
     geomVariables.set("nj", njEff_);
     geomVariables.set("nz", numLevels_);
+    geomVariables.set("has northern fold", hasFold_);
   }
 
   oops::Log::trace() << "GeometryMOM6 constructor done" << std::endl;
