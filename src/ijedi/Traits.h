@@ -17,6 +17,8 @@
 #include "mist/base/ModelData.h"
 
 #include "oops/generic/UnstructuredInterpolator.h"
+#include "oops/generic/AtlasInterpolator.h"
+#include "ijedi/Geometry/landVector/LocalInterpolatorLandVector.h"
 
 namespace ufo {
 template<typename ITERATOR> class ObsLocalization;
@@ -43,7 +45,10 @@ namespace ijedi
     typedef mist::ModelAuxControl            ModelAuxControl;
     typedef mist::ModelAuxIncrement          ModelAuxIncrement;
     typedef mist::ModelAuxCovariance         ModelAuxCovariance;
-    typedef oops::UnstructuredInterpolator   LocalInterpolator;
+    //typedef oops::UnstructuredInterpolator   LocalInterpolator;
+    // Bind custom KNN local interpolator here!
+    //typedef ijedi::LocalInterpolatorLandVector LocalInterpolator;
+    typedef oops::AtlasInterpolator          LocalInterpolator;
     typedef ufo::ObsLocalization<mist::GeometryIterator> ObsLocalization;
   };
 
@@ -68,7 +73,9 @@ namespace ijedi
     typedef mist::ModelAuxControl            ModelAuxControl;
     typedef mist::ModelAuxIncrement          ModelAuxIncrement;
     typedef mist::ModelAuxCovariance         ModelAuxCovariance;
-    typedef oops::UnstructuredInterpolator   LocalInterpolator;
+    //typedef oops::UnstructuredInterpolator   LocalInterpolator;
+    //typedef ijedi::LocalInterpolatorLandVector LocalInterpolator;
+    typedef oops::AtlasInterpolator          LocalInterpolator;
     typedef ufo::ObsLocalization<mist::GeometryIterator> ObsLocalization;
   };
 
@@ -90,7 +97,9 @@ namespace ijedi
     typedef mist::ModelAuxControl            ModelAuxControl;
     typedef mist::ModelAuxIncrement          ModelAuxIncrement;
     typedef mist::ModelAuxCovariance         ModelAuxCovariance;
-    typedef oops::UnstructuredInterpolator   LocalInterpolator;
+    //typedef oops::UnstructuredInterpolator   LocalInterpolator;
+    typedef oops::AtlasInterpolator          LocalInterpolator;
+    //typedef ijedi::LocalInterpolatorLandVector LocalInterpolator;
     typedef ufo::ObsLocalization<mist::GeometryIterator> ObsLocalization;
   };
 

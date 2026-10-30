@@ -33,6 +33,7 @@ list(APPEND ijedi_src_files
 
   Geometry/landVector/GeometryLandVector.cc
   Geometry/landVector/GeometryLandVector.h
+  Geometry/landVector/TraitsLandVector.h
 
   # Fields
   FieldMetadata/FieldsMetadata.cc

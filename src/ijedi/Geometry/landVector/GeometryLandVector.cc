@@ -144,9 +144,6 @@ void sortLandPointsByHilbert(std::vector<atlas::PointXY>& landPoints) {
     });
 }
 
-
-namespace ijedi {
-
 static inline void nc_rc(const int return_code, const std::string & operation) {
   if (return_code != NC_NOERR) {
     std::string errMsg = "GeometryLandVector netCDF operation '" + operation +
@@ -193,15 +190,115 @@ std::vector<double> compute_distances_to_target(const atlas::PointXY& target, co
 
     return distances;
 }
+// -----------------------------------------------------------------------------
 
+
+namespace ijedi {
+
+// Initialize static member variables
+std::map<std::string, std::shared_ptr<GeometryLandVector::SharedData>>
+    GeometryLandVector::cache_;
+std::mutex GeometryLandVector::mutex_;
+
+//---------------cache clear usage e.g. in tests--------------
+/*#include "gtest/gtest.h"
+#include "ijedi/Geometry/landVector/GeometryLandVector.h"
+
+class GeometryLandVectorTest : public ::testing::Test {
+ protected:
+  void TearDown() override {
+    // Purge cached geometries between tests
+    ijedi::GeometryLandVector::clearCache();
+    EXPECT_EQ(ijedi::GeometryLandVector::cacheSize(), 0u);
+  }
+};*/
+
+// -----------------------------------------------------------------------------
+// Clear Cache Function: Call this in C++ Test Fixtures (e.g. TearDown)
+// -----------------------------------------------------------------------------
+void GeometryLandVector::clearCache() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  // Clearing the map drops reference counts.
+  // If no GeometryLandVector objects exist in the test harness,
+  // underlying Atlas grid/PointCloud memory is immediately freed.
+  cache_.clear();
+}
+
+// -----------------------------------------------------------------------------
+// Cache Size Inspector (Useful for assertion checks in unit tests)
+// -----------------------------------------------------------------------------
+size_t GeometryLandVector::cacheSize() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return cache_.size();
+}
+
+// -----------------------------------------------------------------------------
+// Cache Key Generator
+// -----------------------------------------------------------------------------
+std::string GeometryLandVector::makeCacheKey(const eckit::Configuration & config,
+                                             const eckit::mpi::Comm & comm) {
+  // Use unique key parameters driving the PointCloud (e.g. filename, resolution)
+  std::string grid_resol = config.getString("grid_resol", "C384.mx025");
+  return "landVectorGeom_" + grid_resol + "_" + comm.name() + "_" + std::to_string(comm.size());
+}
+
+// -----------------------------------------------------------------------------
+// Primary Constructor
 // -----------------------------------------------------------------------------
 GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
                                        const eckit::mpi::Comm &comm,
-                                       eckit::LocalConfiguration & /*geomVariables*/,
+                                       eckit::LocalConfiguration & geomVariables,
                                        atlas::FunctionSpace &functionSpace,
                                        atlas::FieldSet &geomFields,
                                        bool &levelsAreTopDown, int &numLevels)
-    : comm_(comm) {
+{
+  // Read toggle flag from YAML (defaults to true if key is omitted)
+  const bool useCache = config.getBool("geometry_cache", true);
+
+  if (useCache) {
+    std::string key = makeCacheKey(config, comm);
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    auto it = cache_.find(key);
+    if (it != cache_.end()) {
+      // 1. INSTANCE CREATED FROM SCRATCH MATCHES EXISTING CACHE:
+      // Reuse existing shared data handle across distinct OOPS factory calls
+      sharedData_ = it->second;
+    } else {
+      // 2. FIRST TIME THIS GEOMETRY SPECIFICATION IS CREATED:
+      // Build expensive spatial structures once and store handle in cache map
+      sharedData_ = std::make_shared<SharedData>(config, comm, geomVariables, functionSpace,
+                                         geomFields, levelsAreTopDown, numLevels);
+      cache_[key] = sharedData_;
+    }
+  } else {
+    // 3. CACHE BYPASSED: Construct dedicated instance directly
+    sharedData_ = std::make_shared<SharedData>(config, comm, geomVariables, functionSpace,
+                                               geomFields, levelsAreTopDown, numLevels);
+  }
+
+  // 4: populate output parameters
+  functionSpace = sharedData_->functionSpace_;
+  geomFields = sharedData_->fields_;
+  //geomVariables = sharedData_->geomVariables;
+  //levelsAreTopDown = sharedData_->levelsAreTopDown;
+  //numLevels = sharedData_->numLevels_;
+
+}
+
+// -----------------------------------------------------------------------------
+// SharedData Constructor: Runs ONLY ONCE per unique geometry configuration
+// -----------------------------------------------------------------------------
+GeometryLandVector::SharedData::SharedData(const eckit::Configuration &config,
+                                       const eckit::mpi::Comm &comm,
+                                       eckit::LocalConfiguration & geomVariables,
+                                       atlas::FunctionSpace &functionSpace,
+                                       atlas::FieldSet &geomFields,
+                                       bool &levelsAreTopDown, int &numLevels)
+    : comm_(comm)   //, numLevels_(numLevels), geomVariables(geomVariables), levelsAreTopDown_(levelsAreTopDown)
+{
+
   oops::Log::trace() << "GeometryLandVector::GeometryLandVector starting..." << std::endl;
  
   numLevels_ = config.getInt("nlevels", 1);
@@ -246,7 +343,7 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
   }
   
   // Sort points using Hilbert curve
-  sortLandPointsByHilbert(global_pts);
+//**** did not make a difference ----sortLandPointsByHilbert(global_pts);
   //TODO: Sort corresponding elevation 
   
   eckit::LocalConfiguration fs_config;
@@ -308,7 +405,19 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
   functionSpace_.haloExchange(lon_);
   functionSpace_.haloExchange(owned_);
   functionSpace_.haloExchange(area_);
-  
+
+  std::vector<atlas::Point2> treePoints(functionSpace_.size());
+  std::vector<size_t> payloads(functionSpace_.size());
+
+  for (size_t i = 0; i < functionSpace_.size(); ++i) {
+    treePoints.emplace_back(atlas::Point2(lonlatView(i, 0), lonlatView(i, 1)));
+    payloads.push_back(i); // local functionspace index as payload
+  }
+  //localCellCenterTree_ = atlas::util::IndexKDTree();
+  //localCellCenterTree_.build(treePoints, payloads);
+  localCellCenterTree_ = std::make_unique<atlas::util::IndexKDTree>();
+  localCellCenterTree_->build(treePoints, payloads);
+
   fields_.add(lonlat_);
   fields_.add(global_index_);
   fields_.add(remote_index_);
@@ -333,8 +442,8 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
   }
 
   oops::Log::info() << "=== GeometryLandVector Diagnostic ===" << std::endl;
-  auto loccnt=localNodeCount();
-  auto glbcnt=globalNodeCount();
+  auto loccnt = localNodeCount();
+  auto glbcnt = globalNodeCount();
   if (comm_.rank() == 0 || comm_.rank() == comm_.size() - 1) {
     std::cout << "Rank " << comm_.rank() << "  Local node count:  " << loccnt << std::endl;
     std::cout << "Rank " << comm_.rank() << "  Global node count: " << glbcnt << std::endl;
@@ -378,8 +487,9 @@ GeometryLandVector::GeometryLandVector(const eckit::Configuration &config,
 }
 
 // -----------------------------------------------------------------------------
-GeometryLandVector::GeometryLandVector(const GeometryLandVector & other)
-    : comm_(other.comm_),
+/*GeometryLandVector::GeometryLandVector(const GeometryLandVector & other)
+      :sharedData_(other.sharedData_) { // Copy the shared_ptr (shallow copy
+      : comm_(other.comm_),
       functionSpace_(other.functionSpace_),
       fields_(other.fields_),
       lonlat_(other.lonlat_),
@@ -392,12 +502,20 @@ GeometryLandVector::GeometryLandVector(const GeometryLandVector & other)
       remote_index_(other.remote_index_),
       owned_(other.owned_),
       area_(other.area_)  {}
+*/
+// 2. Copy Assignment Operator (Using standard self-assignment protection)
+/*GeometryLandVector & GeometryLandVector::operator=(const GeometryLandVector & other) {
+  if (this != &other) { // Guard against self-assignment (e.g., geom = geom)
+    sharedData_ = other.sharedData_; // Reassigns shared_ptr, dropping old ref count and taking new one
+  }
+  return *this; // Return reference to self to allow chaining (a = b = c)
+}*/
 
 // -----------------------------------------------------------------------------
-GeometryLandVector::~GeometryLandVector() {}
+//GeometryLandVector::~GeometryLandVector() {}
 
 // -----------------------------------------------------------------------------
-size_t GeometryLandVector::globalNodeCount() const {
+size_t GeometryLandVector::SharedData::globalNodeCount() const {
   size_t localSize = functionSpace_.size();
   size_t globalSize = 0;
   // Sum local sizes across all MPI ranks in comm_
@@ -407,13 +525,13 @@ size_t GeometryLandVector::globalNodeCount() const {
 }
 
 // -----------------------------------------------------------------------------
-size_t GeometryLandVector::localNodeCount() const {
+size_t GeometryLandVector::SharedData::localNodeCount() const {
   return functionSpace_.size();
 }
 
 // -----------------------------------------------------------------------------
 void GeometryLandVector::print(std::ostream & os) const {
-  os << "GeometryLandVector: [ Count = " << globalNodeCount() << " points ]";
+  os << "GeometryLandVector: [ Count = " << sharedData_->globalNodeCount() << " points ]";
 }
 
 // -----------------------------------------------------------------------------------------------
@@ -424,7 +542,7 @@ std::vector<double> GeometryLandVector::verticalCoord(std::string & /*vcUnits*/)
   throw eckit::NotImplemented(errorMsg.str(), Here());
 }
 
-void GeometryLandVector::readLatLonElevFromFile(const std::string pathFile, const std::string latName, const std::string lonName, const std::string elevName,
+void GeometryLandVector::SharedData::readLatLonElevFromFile(const std::string pathFile, const std::string latName, const std::string lonName, const std::string elevName,
     std::vector<double> & lats, std::vector<double> & lons, std::vector<double> & elevations)
 {
     // NetCDF IDs
@@ -471,7 +589,6 @@ void GeometryLandVector::readLatLonElevFromFile(const std::string pathFile, cons
     oops::Log::info() << "Done reading file " << pathFile << std::endl;
 
 }
-
 // -----------------------------------------------------------------------------------------------
 
 }  // namespace ijedi
