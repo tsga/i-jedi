@@ -33,7 +33,6 @@ namespace ijedi
 {
 
   class Geometry;
-  class Increment;
 
   // -----------------------------------------------------------------------------------------------
 
@@ -91,8 +90,6 @@ namespace ijedi
 
     void read(const eckit::Configuration &);
     void write(const eckit::Configuration &) const;
-
-    State &operator+=(const Increment &);
 
     void setAtlasFieldMetadata();
 
