@@ -10,6 +10,7 @@
 #include "eckit/config/Configuration.h"
 #include "eckit/exception/Exceptions.h"
 #include "ijedi/Geometry/Geometry.h"
+#include "ijedi/Increment/Increment.h"
 #include "ijedi/Utilities/PrintHelper.h"
 #include "oops/base/Variables.h"
 #include "oops/util/DateTime.h"
@@ -151,6 +152,14 @@ namespace ijedi {
     io->writeBase(this->fieldSet());
 
     oops::Log::trace() << "ijedi::State::write done" << std::endl;
+  }
+
+  // -----------------------------------------------------------------------------------------------
+
+  State &State::operator+=(const Increment &dx)
+  {
+    mist::Fields::operator+=(dx);
+    return *this;
   }
 
   // -----------------------------------------------------------------------------------------------
