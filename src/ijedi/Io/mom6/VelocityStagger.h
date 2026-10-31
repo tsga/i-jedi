@@ -47,6 +47,17 @@ void tracerToFaces(const std::vector<double> & uT, const std::vector<double> & v
                    const std::vector<double> & mask, int ni, int nj, int nz,
                    bool hasFold, std::vector<double> * u, std::vector<double> * v);
 
+/// tracerToFaces on one rectangular block (ni x nj) given its neighbours:
+/// uEast/mEast [nz][nj] are uT and mask of the column east of the block,
+/// vNorth/mNorth [nz][ni] are vT and mask of the row north of it.  A tripolar
+/// fold image must already be sign-flipped in vNorth; a closed northern
+/// boundary is mNorth = 0.
+void tracerToFacesHalo(const std::vector<double> & uT, const std::vector<double> & vT,
+                       const std::vector<double> & mask, int ni, int nj, int nz,
+                       const std::vector<double> & uEast, const std::vector<double> & mEast,
+                       const std::vector<double> & vNorth, const std::vector<double> & mNorth,
+                       std::vector<double> * u, std::vector<double> * v);
+
 /// Grid-relative -> geographic at tracer points (in place):
 ///   uE = c u + s v,  vN = c v - s u
 void gridToGeo(const std::vector<double> & cosRot, const std::vector<double> & sinRot,

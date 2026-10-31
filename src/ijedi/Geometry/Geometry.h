@@ -58,6 +58,10 @@ namespace ijedi
     void addVaderIngredients(atlas::FieldSet &fset) const
       { geometryImpl_->addModelVaderIngredients(fields(), fset, numberLevels_); }
 
+    // Model-specific implementation, for model IO that needs more than the
+    // generic fieldset (e.g. the MOM6 structured decomposition).
+    const GeometryBase &geometryImpl() const { return *geometryImpl_; }
+
    private:
     Geometry &operator=(const Geometry &);
     void print(std::ostream &) const;

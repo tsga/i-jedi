@@ -21,170 +21,6 @@ int computeExtent(int N, int ndivs, int pe) {
   return base + (pe < extra ? 1 : 0);
 }
 
-void readHgrid(const std::string & path,
-               int niGlobal,
-               int njGlobal,
-               int niEff,
-               int njEff,
-               int coarsenFactor,
-               std::vector<double> * lon,
-               std::vector<double> * lat,
-               std::vector<double> * dxT,
-               std::vector<double> * dyT,
-               std::vector<double> * areaT,
-               std::vector<double> * lonU,
-               std::vector<double> * latU,
-               std::vector<double> * lonV,
-               std::vector<double> * latV,
-               std::vector<double> * cosRot,
-               std::vector<double> * sinRot) {
-  int ncid;
-  if (nc_open(path.c_str(), NC_NOWRITE, &ncid) != NC_NOERR)
-    throw eckit::CantOpenFile(path, Here());
-
-  const int nxp = 2 * niGlobal + 1;
-  const int nyp = 2 * njGlobal + 1;
-  const int nx = 2 * niGlobal;
-  const int nySub = 2 * njGlobal;
-
-  std::vector<double> xFull(static_cast<size_t>(nyp) * nxp);
-  std::vector<double> yFull(static_cast<size_t>(nyp) * nxp);
-  std::vector<double> dxFull(static_cast<size_t>(nyp) * nx);
-  std::vector<double> dyFull(static_cast<size_t>(nySub) * nxp);
-  std::vector<double> aFull(static_cast<size_t>(nySub) * nx);
-
-  int vid;
-  nc_inq_varid(ncid, "x", &vid);
-  nc_get_var_double(ncid, vid, xFull.data());
-  nc_inq_varid(ncid, "y", &vid);
-  nc_get_var_double(ncid, vid, yFull.data());
-  nc_inq_varid(ncid, "dx", &vid);
-  nc_get_var_double(ncid, vid, dxFull.data());
-  nc_inq_varid(ncid, "dy", &vid);
-  nc_get_var_double(ncid, vid, dyFull.data());
-  nc_inq_varid(ncid, "area", &vid);
-  nc_get_var_double(ncid, vid, aFull.data());
-  nc_close(ncid);
-
-  const size_t nT = static_cast<size_t>(njEff) * niEff;
-  lon->resize(nT);
-  lat->resize(nT);
-  dxT->resize(nT);
-  dyT->resize(nT);
-  areaT->resize(nT);
-  lonU->resize(nT);
-  latU->resize(nT);
-  lonV->resize(nT);
-  latV->resize(nT);
-  cosRot->resize(nT);
-  sinRot->resize(nT);
-
-  // Shift x to within half a period of xc (MOM6 modulo_around_point).
-  auto moduloAround = [](double x, double xc) {
-    return x - 360.0 * std::floor((x - xc) / 360.0 + 0.5);
-  };
-  const double piOver720 = std::atan(1.0) / 180.0;
-
-  const int K = coarsenFactor;
-  for (int jG = 0; jG < njEff; ++jG) {
-    const int jS = K * (2 * jG + 1);
-    const int j2 = 2 * K * jG;
-    for (int iG = 0; iG < niEff; ++iG) {
-      const int iS = K * (2 * iG + 1);
-      const int i2 = 2 * K * iG;
-      const int n = jG * niEff + iG;
-
-      (*lon)[n] = xFull[jS * nxp + iS];
-      (*lat)[n] = yFull[jS * nxp + iS];
-      (*lonU)[n] = xFull[jS * nxp + (i2 + 2 * K)];
-      (*latU)[n] = yFull[jS * nxp + (i2 + 2 * K)];
-      (*lonV)[n] = xFull[(jS + K) * nxp + iS];
-      (*latV)[n] = yFull[(jS + K) * nxp + iS];
-
-      // Rotation of grid "north" clockwise from true north, from the four
-      // cell corners -- MOM6 initialize_grid_rotation_angle (non-bugs branch).
-      {
-        const int jSo = j2, jNo = j2 + 2 * K, iWe = i2, iEa = i2 + 2 * K;
-        const double lonC = (*lon)[n];
-        const double lonSW = moduloAround(xFull[jSo * nxp + iWe], lonC);
-        const double lonSE = moduloAround(xFull[jSo * nxp + iEa], lonC);
-        const double lonNW = moduloAround(xFull[jNo * nxp + iWe], lonC);
-        const double lonNE = moduloAround(xFull[jNo * nxp + iEa], lonC);
-        const double latSW = yFull[jSo * nxp + iWe];
-        const double latSE = yFull[jSo * nxp + iEa];
-        const double latNW = yFull[jNo * nxp + iWe];
-        const double latNE = yFull[jNo * nxp + iEa];
-        const double lonScale = std::cos(piOver720 * ((latSW + latNE) + (latSE + latNW)));
-        const double angle = std::atan2(lonScale * ((lonNW - lonSE) + (lonNE - lonSW)),
-                                        (latNW - latSE) + (latNE - latSW));
-        (*cosRot)[n] = std::cos(angle);
-        (*sinRot)[n] = std::sin(angle);
-      }
-
-      (*dxT)[n] = 0.0;
-      for (int dc = 0; dc < 2 * K; ++dc)
-        (*dxT)[n] += dxFull[jS * nx + i2 + dc];
-
-      (*dyT)[n] = 0.0;
-      for (int dr = 0; dr < 2 * K; ++dr)
-        (*dyT)[n] += dyFull[(j2 + dr) * nxp + iS];
-
-      (*areaT)[n] = 0.0;
-      for (int dr = 0; dr < 2 * K; ++dr)
-        for (int dc = 0; dc < 2 * K; ++dc)
-          (*areaT)[n] += aFull[(j2 + dr) * nx + i2 + dc];
-    }
-  }
-}
-
-void readTopog(const std::string & path,
-               int niGlobal,
-               int njGlobal,
-               int niEff,
-               int njEff,
-               int coarsenFactor,
-               double minimumDepth,
-               std::vector<double> * depth,
-               std::vector<double> * wet) {
-  int ncid;
-  if (nc_open(path.c_str(), NC_NOWRITE, &ncid) != NC_NOERR)
-    throw eckit::CantOpenFile(path, Here());
-
-  const size_t n = static_cast<size_t>(njGlobal) * niGlobal;
-  depth->resize(n);
-  wet->resize(n);
-  int vid;
-  nc_inq_varid(ncid, "depth", &vid);
-  nc_get_var_double(ncid, vid, depth->data());
-
-  if (nc_inq_varid(ncid, "wet", &vid) == NC_NOERR) {
-    nc_get_var_double(ncid, vid, wet->data());
-  } else {
-    for (size_t k = 0; k < n; ++k)
-      (*wet)[k] = ((*depth)[k] > minimumDepth) ? 1.0 : 0.0;
-  }
-  nc_close(ncid);
-
-  if (coarsenFactor > 1) {
-    const int K = coarsenFactor;
-    const size_t nEff = static_cast<size_t>(njEff) * niEff;
-    std::vector<double> depthC(nEff), wetC(nEff);
-    for (int jG = 0; jG < njEff; ++jG) {
-      for (int iG = 0; iG < niEff; ++iG) {
-        double sumD = 0.0;
-        for (int jr = 0; jr < K; ++jr)
-          for (int ir = 0; ir < K; ++ir)
-            sumD += (*depth)[(K * jG + jr) * niGlobal + (K * iG + ir)];
-            depthC[jG * niEff + iG] = sumD / (K * K);
-            wetC[jG * niEff + iG] =
-              (depthC[jG * niEff + iG] > minimumDepth) ? 1.0 : 0.0;
-      }
-    }
-    *depth = std::move(depthC);
-    *wet = std::move(wetC);
-  }
-}
-
 namespace {
 
 std::string findDimName(int ncid,
@@ -230,20 +66,218 @@ bool parseLeveledNodeDataName(const std::string & nameLine,
   return true;
 }
 
-}  // namespace
+// Read the [r0, r0+nr) x [c0, c0+nc) hyperslab of the two trailing (row,
+// column) dimensions of 'var'; any leading dimension (time, ntiles) is taken
+// at index 0.
+void readSlab2D(int ncid, const std::string & path, const std::string & var,
+                size_t r0, size_t nr, size_t c0, size_t nc, double * buf) {
+  int vid, ndims;
+  if (nc_inq_varid(ncid, var.c_str(), &vid) != NC_NOERR ||
+      nc_inq_varndims(ncid, vid, &ndims) != NC_NOERR || ndims < 2)
+    throw eckit::Exception("MOM6 geometry: cannot find 2D variable '" + var +
+                           "' in " + path, Here());
+  std::vector<size_t> start(ndims, 0), count(ndims, 1);
+  start[ndims - 2] = r0;  count[ndims - 2] = nr;
+  start[ndims - 1] = c0;  count[ndims - 1] = nc;
+  if (nc_get_vara_double(ncid, vid, start.data(), count.data(), buf) != NC_NOERR)
+    throw eckit::Exception("MOM6 geometry: failed reading '" + var + "' from " + path,
+                           Here());
+}
 
-void readVerticalGeometry(const std::string & path,
-                         int niGlobal,
-                         int njGlobal,
-                         int niEff,
-                         int njEff,
-                         int numLevels,
-                         int coarsenFactor,
-                         std::vector<double> * layerThickness,
-                         std::vector<double> * layerCenterDepth) {
+int openOrThrow(const std::string & path) {
   int ncid;
   if (nc_open(path.c_str(), NC_NOWRITE, &ncid) != NC_NOERR)
     throw eckit::CantOpenFile(path, Here());
+  return ncid;
+}
+
+}  // namespace
+
+void readHgridBlock(const std::string & path,
+                    int coarsenFactor,
+                    const Block & block,
+                    std::vector<double> * lon,
+                    std::vector<double> * lat,
+                    std::vector<double> * dxT,
+                    std::vector<double> * dyT,
+                    std::vector<double> * areaT,
+                    std::vector<double> * lonU,
+                    std::vector<double> * latU,
+                    std::vector<double> * lonV,
+                    std::vector<double> * latV,
+                    std::vector<double> * cosRot,
+                    std::vector<double> * sinRot) {
+  const int K = coarsenFactor;
+  // Supergrid corner rows/columns covering the block: x, y are (nyp, nxp),
+  // dx is (nyp, nx), dy is (ny, nxp) and area is (ny, nx).
+  const size_t r0 = static_cast<size_t>(2 * K) * block.j0;
+  const size_t c0 = static_cast<size_t>(2 * K) * block.i0;
+  const size_t R  = static_cast<size_t>(2 * K) * block.nj + 1;
+  const size_t C  = static_cast<size_t>(2 * K) * block.ni + 1;
+
+  std::vector<double> x(R * C), y(R * C), dx(R * (C - 1)), dy((R - 1) * C),
+                      a((R - 1) * (C - 1));
+  const int ncid = openOrThrow(path);
+  readSlab2D(ncid, path, "x",    r0, R,     c0, C,     x.data());
+  readSlab2D(ncid, path, "y",    r0, R,     c0, C,     y.data());
+  readSlab2D(ncid, path, "dx",   r0, R,     c0, C - 1, dx.data());
+  readSlab2D(ncid, path, "dy",   r0, R - 1, c0, C,     dy.data());
+  readSlab2D(ncid, path, "area", r0, R - 1, c0, C - 1, a.data());
+  nc_close(ncid);
+
+  const size_t nT = block.size();
+  for (auto * v : {lon, lat, dxT, dyT, areaT, lonU, latU, lonV, latV, cosRot, sinRot})
+    v->resize(nT);
+
+  // Shift x to within half a period of xc (MOM6 modulo_around_point).
+  auto moduloAround = [](double x, double xc) {
+    return x - 360.0 * std::floor((x - xc) / 360.0 + 0.5);
+  };
+  const double piOver720 = std::atan(1.0) / 180.0;
+
+  for (int jL = 0; jL < block.nj; ++jL) {
+    const size_t jS = static_cast<size_t>(K) * (2 * jL + 1);
+    const size_t j2 = static_cast<size_t>(2 * K) * jL;
+    for (int iL = 0; iL < block.ni; ++iL) {
+      const size_t iS = static_cast<size_t>(K) * (2 * iL + 1);
+      const size_t i2 = static_cast<size_t>(2 * K) * iL;
+      const size_t n = static_cast<size_t>(jL) * block.ni + iL;
+
+      (*lon)[n]  = x[jS * C + iS];
+      (*lat)[n]  = y[jS * C + iS];
+      (*lonU)[n] = x[jS * C + (i2 + 2 * K)];
+      (*latU)[n] = y[jS * C + (i2 + 2 * K)];
+      (*lonV)[n] = x[(jS + K) * C + iS];
+      (*latV)[n] = y[(jS + K) * C + iS];
+
+      // Rotation of grid "north" clockwise from true north, from the four
+      // cell corners -- MOM6 initialize_grid_rotation_angle (non-bugs branch).
+      {
+        const size_t jSo = j2, jNo = j2 + 2 * K, iWe = i2, iEa = i2 + 2 * K;
+        const double lonC = (*lon)[n];
+        const double lonSW = moduloAround(x[jSo * C + iWe], lonC);
+        const double lonSE = moduloAround(x[jSo * C + iEa], lonC);
+        const double lonNW = moduloAround(x[jNo * C + iWe], lonC);
+        const double lonNE = moduloAround(x[jNo * C + iEa], lonC);
+        const double latSW = y[jSo * C + iWe];
+        const double latSE = y[jSo * C + iEa];
+        const double latNW = y[jNo * C + iWe];
+        const double latNE = y[jNo * C + iEa];
+        const double lonScale = std::cos(piOver720 * ((latSW + latNE) + (latSE + latNW)));
+        const double angle = std::atan2(lonScale * ((lonNW - lonSE) + (lonNE - lonSW)),
+                                        (latNW - latSE) + (latNE - latSW));
+        (*cosRot)[n] = std::cos(angle);
+        (*sinRot)[n] = std::sin(angle);
+      }
+
+      (*dxT)[n] = 0.0;
+      for (int dc = 0; dc < 2 * K; ++dc)
+        (*dxT)[n] += dx[jS * (C - 1) + i2 + dc];
+
+      (*dyT)[n] = 0.0;
+      for (int dr = 0; dr < 2 * K; ++dr)
+        (*dyT)[n] += dy[(j2 + dr) * C + iS];
+
+      (*areaT)[n] = 0.0;
+      for (int dr = 0; dr < 2 * K; ++dr)
+        for (int dc = 0; dc < 2 * K; ++dc)
+          (*areaT)[n] += a[(j2 + dr) * (C - 1) + i2 + dc];
+    }
+  }
+}
+
+void readHgridLonLat(const std::string & path,
+                     int niGlobal,
+                     int niEff,
+                     int njEff,
+                     int coarsenFactor,
+                     std::vector<double> * lon,
+                     std::vector<double> * lat) {
+  const int K = coarsenFactor;
+  const size_t nxp = static_cast<size_t>(2 * niGlobal) + 1;
+  lon->resize(static_cast<size_t>(njEff) * niEff);
+  lat->resize(static_cast<size_t>(njEff) * niEff);
+
+  // Read a strip of T rows at a time: bounded memory, few large reads.
+  const int strip = 32;
+  std::vector<double> xs, ys;
+  const int ncid = openOrThrow(path);
+  for (int jG0 = 0; jG0 < njEff; jG0 += strip) {
+    const int nRows = std::min(strip, njEff - jG0);
+    const size_t rowFirst = static_cast<size_t>(K) * (2 * jG0 + 1);
+    const size_t nr = static_cast<size_t>(2 * K) * (nRows - 1) + 1;
+    xs.resize(nr * nxp);
+    ys.resize(nr * nxp);
+    readSlab2D(ncid, path, "x", rowFirst, nr, 0, nxp, xs.data());
+    readSlab2D(ncid, path, "y", rowFirst, nr, 0, nxp, ys.data());
+    for (int jj = 0; jj < nRows; ++jj) {
+      const size_t r = static_cast<size_t>(2 * K) * jj;
+      for (int iG = 0; iG < niEff; ++iG) {
+        const size_t iS = static_cast<size_t>(K) * (2 * iG + 1);
+        const size_t n = static_cast<size_t>(jG0 + jj) * niEff + iG;
+        (*lon)[n] = xs[r * nxp + iS];
+        (*lat)[n] = ys[r * nxp + iS];
+      }
+    }
+  }
+  nc_close(ncid);
+}
+
+void readTopogBlock(const std::string & path,
+                    int coarsenFactor,
+                    double minimumDepth,
+                    const Block & block,
+                    std::vector<double> * depth,
+                    std::vector<double> * wet) {
+  const int K = coarsenFactor;
+  const size_t nr = static_cast<size_t>(K) * block.nj;
+  const size_t nc = static_cast<size_t>(K) * block.ni;
+  const size_t r0 = static_cast<size_t>(K) * block.j0;
+  const size_t c0 = static_cast<size_t>(K) * block.i0;
+
+  std::vector<double> d(nr * nc);
+  const int ncid = openOrThrow(path);
+  readSlab2D(ncid, path, "depth", r0, nr, c0, nc, d.data());
+
+  if (K == 1) {
+    wet->resize(d.size());
+    int vid;
+    if (nc_inq_varid(ncid, "wet", &vid) == NC_NOERR) {
+      readSlab2D(ncid, path, "wet", r0, nr, c0, nc, wet->data());
+    } else {
+      for (size_t k = 0; k < d.size(); ++k)
+        (*wet)[k] = (d[k] > minimumDepth) ? 1.0 : 0.0;
+    }
+    nc_close(ncid);
+    *depth = std::move(d);
+    return;
+  }
+  nc_close(ncid);
+
+  depth->resize(block.size());
+  wet->resize(block.size());
+  for (int jL = 0; jL < block.nj; ++jL) {
+    for (int iL = 0; iL < block.ni; ++iL) {
+      double sumD = 0.0;
+      for (int jr = 0; jr < K; ++jr)
+        for (int ir = 0; ir < K; ++ir)
+          sumD += d[static_cast<size_t>(K * jL + jr) * nc + (K * iL + ir)];
+      const size_t n = static_cast<size_t>(jL) * block.ni + iL;
+      (*depth)[n] = sumD / (K * K);
+      (*wet)[n] = ((*depth)[n] > minimumDepth) ? 1.0 : 0.0;
+    }
+  }
+}
+
+void readVerticalGeometryBlock(const std::string & path,
+                               int niGlobal,
+                               int njGlobal,
+                               int numLevels,
+                               int coarsenFactor,
+                               const Block & block,
+                               std::vector<double> * layerThickness,
+                               std::vector<double> * layerCenterDepth) {
+  const int ncid = openOrThrow(path);
 
   size_t fileNi = 0, fileNj = 0, fileNz = 0;
   const std::string dimX =
@@ -267,54 +301,54 @@ void readVerticalGeometry(const std::string & path,
         Here());
   }
 
-  int vid;
-  if (nc_inq_varid(ncid, "h", &vid) != NC_NOERR) {
+  int vid, ndims;
+  if (nc_inq_varid(ncid, "h", &vid) != NC_NOERR ||
+      nc_inq_varndims(ncid, vid, &ndims) != NC_NOERR || ndims < 3) {
     nc_close(ncid);
     throw eckit::Exception(
         "MOM6 vertical geometry: variable 'h' not found in " + path, Here());
   }
 
-  const size_t nFull = static_cast<size_t>(numLevels) * njGlobal * niGlobal;
-  std::vector<double> hFull(nFull);
-  const size_t start[4] = {0, 0, 0, 0};
-  const size_t count[4] = {1,
-                           static_cast<size_t>(numLevels),
-                           static_cast<size_t>(njGlobal),
-                           static_cast<size_t>(niGlobal)};
-  if (nc_get_vara_double(ncid, vid, start, count, hFull.data()) != NC_NOERR) {
+  // Fine-grid block (K x the effective block), all levels; any leading
+  // (time) dimension is taken at index 0.
+  const int K = coarsenFactor;
+  const size_t nr = static_cast<size_t>(K) * block.nj;
+  const size_t nc = static_cast<size_t>(K) * block.ni;
+  std::vector<size_t> start(ndims, 0), count(ndims, 1);
+  count[ndims - 3] = static_cast<size_t>(numLevels);
+  start[ndims - 2] = static_cast<size_t>(K) * block.j0;  count[ndims - 2] = nr;
+  start[ndims - 1] = static_cast<size_t>(K) * block.i0;  count[ndims - 1] = nc;
+  std::vector<double> hBlk(static_cast<size_t>(numLevels) * nr * nc);
+  if (nc_get_vara_double(ncid, vid, start.data(), count.data(), hBlk.data()) != NC_NOERR) {
     nc_close(ncid);
     throw eckit::Exception(
         "MOM6 vertical geometry: failed reading 'h' from " + path, Here());
   }
   nc_close(ncid);
 
-  if (coarsenFactor > 1) {
-    const int K = coarsenFactor;
-    const size_t nEff = static_cast<size_t>(numLevels) * njEff * niEff;
-    std::vector<double> hCoarse(nEff, 0.0);
+  const size_t nHoriz = block.size();
+  if (K > 1) {
+    std::vector<double> hCoarse(static_cast<size_t>(numLevels) * nHoriz, 0.0);
     for (int k = 0; k < numLevels; ++k) {
-      const size_t kFine = static_cast<size_t>(k) * njGlobal * niGlobal;
-      const size_t kEff = static_cast<size_t>(k) * njEff * niEff;
-      for (int jG = 0; jG < njEff; ++jG) {
-        for (int iG = 0; iG < niEff; ++iG) {
+      const size_t kFine = static_cast<size_t>(k) * nr * nc;
+      const size_t kEff = static_cast<size_t>(k) * nHoriz;
+      for (int jL = 0; jL < block.nj; ++jL) {
+        for (int iL = 0; iL < block.ni; ++iL) {
           double sumH = 0.0;
-          for (int jr = 0; jr < K; ++jr) {
-            for (int ir = 0; ir < K; ++ir) {
-              sumH += hFull[kFine + static_cast<size_t>(K * jG + jr) * niGlobal +
-                            static_cast<size_t>(K * iG + ir)];
-            }
-          }
-          hCoarse[kEff + static_cast<size_t>(jG) * niEff + iG] =
+          for (int jr = 0; jr < K; ++jr)
+            for (int ir = 0; ir < K; ++ir)
+              sumH += hBlk[kFine + static_cast<size_t>(K * jL + jr) * nc +
+                           static_cast<size_t>(K * iL + ir)];
+          hCoarse[kEff + static_cast<size_t>(jL) * block.ni + iL] =
               sumH / static_cast<double>(K * K);
         }
       }
     }
     *layerThickness = std::move(hCoarse);
   } else {
-    *layerThickness = std::move(hFull);
+    *layerThickness = std::move(hBlk);
   }
 
-  const size_t nHoriz = static_cast<size_t>(njEff) * niEff;
   layerCenterDepth->assign(static_cast<size_t>(numLevels) * nHoriz, 0.0);
   for (size_t n = 0; n < nHoriz; ++n) {
     double depthTop = 0.0;

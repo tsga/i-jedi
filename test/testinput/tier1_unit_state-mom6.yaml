@@ -36,7 +36,7 @@ state test:
         sea_ice_area_fraction: aice_h
         sea_ice_thickness: hi_h
         sea_ice_snow_thickness: hs_h
-        sea_water_depth: depth
+        sea_water_depth: sea_water_depth
   write then read test:
     state write:
       io:
@@ -60,6 +60,6 @@ state test:
         ocn_file: mom6_history_write_test.nc
         field io names: *mom6_field_io_names
   date: 2021-01-01T00:00:00Z
-  norm file: 1.04264233631286028e+05
+  norm file: 2.11931369776995474e+05
   tolerance: 1.0e-05
   test variable change constructor: false

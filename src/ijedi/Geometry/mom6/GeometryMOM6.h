@@ -12,6 +12,7 @@
 #include "atlas/functionspace.h"
 
 #include "ijedi/Geometry/base/GeometryBase.h"
+#include "ijedi/Geometry/mom6/GeometryMOM6Utils.h"
 
 namespace eckit
 {
@@ -39,6 +40,17 @@ namespace ijedi
     const atlas::FieldSet      & mom6Fields() const
       { return mom6Fields_; }
 
+    // This rank's MOM6 compute block on the effective (possibly coarsened) grid
+    mom6::Block mom6Block() const
+      { return {iStart_ - 1, jStart_ - 1, iCount_, jCount_}; }
+    int niEff() const { return niEff_; }
+    int njEff() const { return njEff_; }
+    bool hasFold() const { return hasFold_; }
+    // MOM6 rank owning effective-grid point (iG, jG) (0-based) and the
+    // row-major index of that point in the owner's block
+    std::pair<int, int> mom6Owner(int iG, int jG) const;
+    const eckit::mpi::Comm & comm() const { return comm_; }
+
     // Scatter/gather map: for each JEDI-owned ocean point, the owning MOM6
     // rank and the row-major local index on that rank.  Built once at init;
     // used by ModelMOM6 to exchange state before/after MOM6::run().
@@ -48,9 +60,9 @@ namespace ijedi
     };
     const ScatterMap & scatterMap() const { return scatterMap_; }
 
-    // Move a field between the MOM6 structured decomposition and the JEDI
-    // unstructured one.  ExchangePlan is precomputed once in the constructor;
-    // scatter/gather are cheap thereafter.
+    // Move a field (any number of levels) between the MOM6 structured
+    // decomposition and the JEDI unstructured one.  ExchangePlan is
+    // precomputed once in the constructor; scatter/gather are cheap thereafter.
     void scatterToJedi(const atlas::Field & mom6Field,
                        atlas::Field * jediField) const;
     void gatherFromJedi(const atlas::Field & jediField,
@@ -59,10 +71,10 @@ namespace ijedi
    private:
     // --- Function space builders ---
     // MOM6 structured space: replicates FMS rectangular tile decomposition
-    // → mom6FunctionSpace_
+    // → mom6FunctionSpace_.  lon/lat are this rank's block (iCount_*jCount_).
     void buildMom6FunctionSpace(const eckit::mpi::Comm & comm,
-                                const std::vector<double> & lonGlobal,
-                                const std::vector<double> & latGlobal);
+                                const std::vector<double> & lon,
+                                const std::vector<double> & lat);
 
     // JEDI unstructured space: ocean + configurable land-fringe points,
     // load-balanced
@@ -73,44 +85,29 @@ namespace ijedi
                                 const std::vector<double> & latGlobal);
 
     // --- Field builders ---
-    // Populate mom6Fields_ on mom6FunctionSpace_ from global arrays
-    // (extracts local slice)
-    void buildMom6Fields(const std::vector<double> & lonGlobal,
-                         const std::vector<double> & latGlobal,
-                         const std::vector<double> & depthGlobal,
-                         const std::vector<double> & wetGlobal,
-                         const std::vector<double> & layerThicknessGlobal,
-                         const std::vector<double> & layerCenterDepthGlobal,
-                         const std::vector<double> & mask3dGlobal,
-                         const std::vector<double> & dxTGlobal,
-                         const std::vector<double> & dyTGlobal,
-                         const std::vector<double> & areaTGlobal,
-                         const std::vector<double> & lonUGlobal,
-                         const std::vector<double> & latUGlobal,
-                         const std::vector<double> & lonVGlobal,
-                         const std::vector<double> & latVGlobal,
-                         const std::vector<double> & cosRotGlobal,
-                         const std::vector<double> & sinRotGlobal);
+    // Populate mom6Fields_ on mom6FunctionSpace_ from this rank's block
+    // (row-major iCount_*jCount_; 3D arrays level-major)
+    void buildMom6Fields(const std::vector<double> & lon,
+                         const std::vector<double> & lat,
+                         const std::vector<double> & depth,
+                         const std::vector<double> & wet,
+                         const std::vector<double> & layerThickness,
+                         const std::vector<double> & layerCenterDepth,
+                         const std::vector<double> & mask3d,
+                         const std::vector<double> & dxT,
+                         const std::vector<double> & dyT,
+                         const std::vector<double> & areaT,
+                         const std::vector<double> & lonU,
+                         const std::vector<double> & latU,
+                         const std::vector<double> & lonV,
+                         const std::vector<double> & latV,
+                         const std::vector<double> & cosRot,
+                         const std::vector<double> & sinRot);
 
-    // Populate fields_ on functionSpace_ (JEDI unstructured) from global
-    // arrays via jediPoints_
-    void buildFields(const std::vector<double> & lonGlobal,
-                     const std::vector<double> & latGlobal,
-                     const std::vector<double> & depthGlobal,
-                     const std::vector<double> & wetGlobal,
-                     const std::vector<double> & layerThicknessGlobal,
-                     const std::vector<double> & layerCenterDepthGlobal,
-                     const std::vector<double> & mask3dGlobal,
-                     const std::vector<double> & dxTGlobal,
-                     const std::vector<double> & dyTGlobal,
-                     const std::vector<double> & areaTGlobal,
-                     const std::vector<double> & lonUGlobal,
-                     const std::vector<double> & latUGlobal,
-                     const std::vector<double> & lonVGlobal,
-                     const std::vector<double> & latVGlobal,
-                     const std::vector<double> & cosRotGlobal,
-                     const std::vector<double> & sinRotGlobal,
-                     bool buildVerticalGeometry);
+    // Populate fields_ on functionSpace_ (JEDI unstructured): owned nodes are
+    // scattered from mom6Fields_, ghost/halo nodes filled by halo exchange.
+    // Requires the scatter map and exchange plan.
+    void buildFields(bool buildVerticalGeometry);
 
     // Distance from each JEDI point to the nearest land cell (metres)
     void buildDistFromCoast(const std::vector<double> & lonGlobal,

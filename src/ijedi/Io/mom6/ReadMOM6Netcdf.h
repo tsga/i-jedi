@@ -11,6 +11,8 @@
 
 namespace ijedi {
 
+class GeometryMOM6;
+
 /// Read one or more MOM6-format NetCDF files into an Atlas FieldSet.
 ///
 /// Rank 0 reads each file in order (ocean, sea-ice, fix, …).  For every file
@@ -35,5 +37,15 @@ void readMOM6Netcdf(const std::vector<std::string> & filepaths,
                     const std::vector<double> & scalings,
                     const eckit::mpi::Comm & comm,
                     const mom6::VelocityGridInfo * velGrid = nullptr);
+
+/// Distributed variant: each task reads only its MOM6 block of each variable
+/// (hyperslab) and the values are scattered to the JEDI points it owns, then
+/// halo-exchanged.  No task holds a global field.  Every file must be on the
+/// geometry's (effective) horizontal grid.
+void readMOM6NetcdfBlocks(const std::vector<std::string> & filepaths,
+                          atlas::FieldSet & x,
+                          const std::vector<std::string> & fileVarNames,
+                          const std::vector<double> & scalings,
+                          const GeometryMOM6 & geom);
 
 }  // namespace ijedi

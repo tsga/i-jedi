@@ -11,6 +11,8 @@
 
 namespace ijedi {
 
+class GeometryMOM6;
+
 /// Write an Atlas FieldSet to a MOM6-format NetCDF file.
 ///
 /// Each field in @p x is gathered to rank 0 using Atlas NodeColumns::gather(),
@@ -36,5 +38,17 @@ void writeMOM6Netcdf(const std::string & filepath,
                      const eckit::mpi::Comm & comm,
                      bool nativeVelocity = false,
                      const mom6::VelocityGridInfo * velGrid = nullptr);
+
+/// Distributed variant: each task gathers its MOM6 block from the JEDI points
+/// and all tasks write their blocks collectively into one NetCDF-4 file
+/// (parallel I/O).  No task holds a global field.  nativeVelocity as in
+/// writeMOM6Netcdf; the faces on a block's east and north edges take their
+/// neighbouring cells from the owning tasks.
+void writeMOM6NetcdfBlocks(const std::string & filepath,
+                           const atlas::FieldSet & x,
+                           const std::vector<std::string> & fileVarNames,
+                           int nz,
+                           const GeometryMOM6 & geom,
+                           bool nativeVelocity = false);
 
 }  // namespace ijedi

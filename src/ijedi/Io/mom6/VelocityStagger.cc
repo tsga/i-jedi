@@ -73,6 +73,41 @@ void tracerToFaces(const std::vector<double> & uT, const std::vector<double> & v
   ASSERT(vT.size() == static_cast<size_t>(nz) * nh);
   ASSERT(mask.size() >= static_cast<size_t>(nz) * nh);
 
+  // East neighbour of the last column is the first (periodic); north
+  // neighbour of the last row is its fold image (nj-1, ni-1-i), where
+  // grid-relative vectors change sign.  Without a fold the north face is closed.
+  std::vector<double> uEast(static_cast<size_t>(nz) * nj), mEast(uEast.size());
+  std::vector<double> vNorth(static_cast<size_t>(nz) * ni, 0.0), mNorth(vNorth.size(), 0.0);
+  for (int k = 0; k < nz; ++k) {
+    const size_t off = static_cast<size_t>(k) * nh;
+    for (int j = 0; j < nj; ++j) {
+      uEast[static_cast<size_t>(k) * nj + j] = uT[off + static_cast<size_t>(j) * ni];
+      mEast[static_cast<size_t>(k) * nj + j] = mask[off + static_cast<size_t>(j) * ni];
+    }
+    if (hasFold) {
+      for (int i = 0; i < ni; ++i) {
+        const size_t img = off + static_cast<size_t>(nj - 1) * ni + (ni - 1 - i);
+        vNorth[static_cast<size_t>(k) * ni + i] = -vT[img];
+        mNorth[static_cast<size_t>(k) * ni + i] = mask[img];
+      }
+    }
+  }
+  tracerToFacesHalo(uT, vT, mask, ni, nj, nz, uEast, mEast, vNorth, mNorth, u, v);
+}
+
+// ---------------------------------------------------------------------------
+void tracerToFacesHalo(const std::vector<double> & uT, const std::vector<double> & vT,
+                       const std::vector<double> & mask, int ni, int nj, int nz,
+                       const std::vector<double> & uEast, const std::vector<double> & mEast,
+                       const std::vector<double> & vNorth, const std::vector<double> & mNorth,
+                       std::vector<double> * u, std::vector<double> * v) {
+  const size_t nh = static_cast<size_t>(nj) * ni;
+  ASSERT(uT.size() == static_cast<size_t>(nz) * nh);
+  ASSERT(vT.size() == static_cast<size_t>(nz) * nh);
+  ASSERT(mask.size() >= static_cast<size_t>(nz) * nh);
+  ASSERT(uEast.size() == static_cast<size_t>(nz) * nj && mEast.size() == uEast.size());
+  ASSERT(vNorth.size() == static_cast<size_t>(nz) * ni && mNorth.size() == vNorth.size());
+
   u->assign(static_cast<size_t>(nz) * nh, 0.0);
   v->assign(static_cast<size_t>(nz) * nh, 0.0);
 
@@ -83,19 +118,27 @@ void tracerToFaces(const std::vector<double> & uT, const std::vector<double> & v
       for (int i = 0; i < ni; ++i) {
         const size_t c = at(j, i);
 
-        // East face: cell (i, j) and its periodic eastern neighbour
-        const size_t e = at(j, (i + 1) % ni);
-        (*u)[c] = mask[c] * mask[e] * 0.5 * (uT[c] + uT[e]);
-
-        // North face: cell (i, j) and its northern neighbour (fold image on
-        // the last row, where grid-relative vectors change sign)
-        if (j < nj - 1) {
-          const size_t n = at(j + 1, i);
-          (*v)[c] = mask[c] * mask[n] * 0.5 * (vT[c] + vT[n]);
-        } else if (hasFold) {
-          const size_t n = at(j, ni - 1 - i);
-          (*v)[c] = mask[c] * mask[n] * 0.5 * (vT[c] - vT[n]);
+        // East face: cell (i, j) and its eastern neighbour
+        double uE, mE;
+        if (i < ni - 1) {
+          uE = uT[at(j, i + 1)];
+          mE = mask[at(j, i + 1)];
+        } else {
+          uE = uEast[static_cast<size_t>(k) * nj + j];
+          mE = mEast[static_cast<size_t>(k) * nj + j];
         }
+        (*u)[c] = mask[c] * mE * 0.5 * (uT[c] + uE);
+
+        // North face: cell (i, j) and its northern neighbour
+        double vN, mN;
+        if (j < nj - 1) {
+          vN = vT[at(j + 1, i)];
+          mN = mask[at(j + 1, i)];
+        } else {
+          vN = vNorth[static_cast<size_t>(k) * ni + i];
+          mN = mNorth[static_cast<size_t>(k) * ni + i];
+        }
+        (*v)[c] = mask[c] * mN * 0.5 * (vT[c] + vN);
       }
     }
   }

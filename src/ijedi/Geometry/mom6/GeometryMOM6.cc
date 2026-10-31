@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <numeric>
 #include <sstream>
 #include <string>
@@ -27,12 +28,14 @@
 #include "atlas/mesh/MeshBuilder.h"
 #include "atlas/mesh/actions/BuildHalo.h"
 #include "atlas/output/Gmsh.h"
+#include "atlas/util/Config.h"
 #include "atlas/util/Earth.h"
 #include "atlas/util/KDTree.h"
 #include "atlas/util/Metadata.h"
 
 #include "oops/util/FieldSetHelpers.h"
 #include "oops/util/Logger.h"
+#include "oops/util/printRunStats.h"
 #include "oops/util/Timer.h"
 #include "oops/util/abor1_cpp.h"
 
@@ -42,12 +45,23 @@
 // ---------------------------------------------------------------------------
 namespace ijedi
 {
+namespace {
+// Exchange-plan counts/displacements are per point and do not depend on the
+// number of levels (fields carry 1 or nz).  Scale them to per value so that
+// all levels of a field move in one allToAllv.
+std::vector<int> perValue(const std::vector<int> & perPoint, int nlev) {
+  std::vector<int> v(perPoint);
+  for (auto & x : v) x *= nlev;
+  return v;
+}
+}  // namespace
+
 // ---------------------------------------------------------------------------
-// Build Atlas NodeColumns for the local MOM6 compute domain.
-// Global arrays are passed in; local slice is extracted here.
+// Build Atlas NodeColumns for the local MOM6 compute domain from this
+// rank's block coordinates.
 void GeometryMOM6::buildMom6FunctionSpace(const eckit::mpi::Comm & comm,
-                                          const std::vector<double> & lonGlobal,
-                                          const std::vector<double> & latGlobal)
+                                          const std::vector<double> & lon,
+                                          const std::vector<double> & lat)
 {
   using atlas::gidx_t;
   using atlas::idx_t;
@@ -65,8 +79,8 @@ void GeometryMOM6::buildMom6FunctionSpace(const eckit::mpi::Comm & comm,
       const int n  = jL * iCount_ + iL;
       const int iG = iStart_ - 1 + iL;
       const int jG = jStart_ - 1 + jL;
-      lons[n]      = lonGlobal[jG * niEff_ + iG];
-      lats[n]      = latGlobal[jG * niEff_ + iG];
+      lons[n]      = lon[n];
+      lats[n]      = lat[n];
       globalIdx[n] = static_cast<gidx_t>(jG * niEff_ + iG + 1);  // 1-based
       remoteIdx[n] = static_cast<idx_t>(n + 1);                      // 1-based
     }
@@ -162,6 +176,8 @@ void GeometryMOM6::buildJediFunctionSpace(const eckit::mpi::Comm & comm,
     }
   }
   nActiveGlobal_ = static_cast<int>(active.size());
+  std::vector<int>().swap(frontier);
+  std::vector<int>().swap(distToOcean);
 
   // --- Step 2: Atlas geographic partition ---
   // Build an UnstructuredGrid from the active-point coordinates and let
@@ -174,9 +190,20 @@ void GeometryMOM6::buildJediFunctionSpace(const eckit::mpi::Comm & comm,
     const int gIdx = active[k].jG * niEff_ + active[k].iG;
     pts[k] = atlas::PointXY(lonGlobal[gIdx], latGlobal[gIdx]);
   }
-  const atlas::UnstructuredGrid ugrid(pts);
+  const atlas::UnstructuredGrid ugrid(std::move(pts));
+  // Every rank computes the same npes-way partition on its own single-task
+  // communicator.  atlas (0.40) otherwise splits the sort over the tasks of
+  // the communicator using 32-bit products (task * points), which overflows
+  // once points * tasks > 2^31 (e.g. ~9 M active points on 480 tasks at 1/12°).
+  const std::string selfComm = "ijedi_mom6_partition_self";
+  comm.split(rank, selfComm);
+  atlas::util::Config partConf;
+  partConf.set("type", "equal_regions");
+  partConf.set("partitions", npes);
+  partConf.set("mpi_comm", selfComm);
   const atlas::grid::Distribution dist =
-      atlas::grid::Partitioner("equal_regions", npes).partition(ugrid);
+      atlas::grid::Partitioner(partConf).partition(ugrid);
+  eckit::mpi::deleteComm(selfComm);
 
   // partOf[k] = JEDI rank owning active point k
   for (int k = 0; k < nActiveGlobal_; ++k)
@@ -186,11 +213,11 @@ void GeometryMOM6::buildJediFunctionSpace(const eckit::mpi::Comm & comm,
   ownedMin_   = static_cast<int>(dist.min_pts());
   ownedMax_   = static_cast<int>(dist.max_pts());
 
-  // Fast lookup: flat global index (jG*NI+iG) → index in active[]
-  std::unordered_map<int, int> activeMap;
-  activeMap.reserve(nActiveGlobal_);
+  // Dense lookup: flat global index (jG*NI+iG) → index in active[], or -1.
+  std::vector<int> activeIdx(nCells, -1);
   for (int k = 0; k < nActiveGlobal_; ++k)
-    activeMap[active[k].jG * niEff_ + active[k].iG] = k;
+    activeIdx[active[k].jG * niEff_ + active[k].iG] = k;
+  auto isActive = [&](int flat) { return activeIdx[flat] >= 0; };
 
   // --- Step 3: identify ghost nodes ---
   // Collect owned points, then scan their neighbours for cross-rank
@@ -220,9 +247,7 @@ void GeometryMOM6::buildJediFunctionSpace(const eckit::mpi::Comm & comm,
                          jG + 1, jG + 1 };
     for (int d = 0; d < 8; ++d) {
       if (nbJ[d] < 0 || nbJ[d] >= njEff_) continue;
-      auto it = activeMap.find(nbJ[d] * niEff_ + nbI[d]);
-      if (it == activeMap.end()) continue;
-      addGhostActiveIndex(it->second);
+      addGhostActiveIndex(activeIdx[nbJ[d] * niEff_ + nbI[d]]);
     }
 
     // Tripolar fold connectivity: northern seam quads connect to reflected
@@ -232,15 +257,12 @@ void GeometryMOM6::buildJediFunctionSpace(const eckit::mpi::Comm & comm,
       if (2 * (iG + 1) < niEff_) {
         const int foldNE = niEff_ - 2 - iG;
         const int foldNW = niEff_ - 1 - iG;
-        auto itNE = activeMap.find(jG * niEff_ + foldNE);
-        if (itNE != activeMap.end()) addGhostActiveIndex(itNE->second);
-        auto itNW = activeMap.find(jG * niEff_ + foldNW);
-        if (itNW != activeMap.end()) addGhostActiveIndex(itNW->second);
+        addGhostActiveIndex(activeIdx[jG * niEff_ + foldNE]);
+        addGhostActiveIndex(activeIdx[jG * niEff_ + foldNW]);
       }
       if (iG1 < niEff_ && 2 * iG1 < niEff_) {
         const int foldOfI1 = niEff_ - 1 - iG1;
-        auto itFold = activeMap.find(jG * niEff_ + foldOfI1);
-        if (itFold != activeMap.end()) addGhostActiveIndex(itFold->second);
+        addGhostActiveIndex(activeIdx[jG * niEff_ + foldOfI1]);
       }
     }
   }
@@ -280,10 +302,10 @@ void GeometryMOM6::buildJediFunctionSpace(const eckit::mpi::Comm & comm,
     if (jG + 1 >= njEff_) continue;                    // no northern neighbour
     const int iG1 = (iG + 1) % niEff_;                 // periodic in i
     const int jG1 = jG + 1;
-    if (activeMap.find(jG  * niEff_ + iG ) == activeMap.end()) continue;
-    if (activeMap.find(jG  * niEff_ + iG1) == activeMap.end()) continue;
-    if (activeMap.find(jG1 * niEff_ + iG1) == activeMap.end()) continue;
-    if (activeMap.find(jG1 * niEff_ + iG ) == activeMap.end()) continue;
+    if (!isActive(jG  * niEff_ + iG )) continue;
+    if (!isActive(jG  * niEff_ + iG1)) continue;
+    if (!isActive(jG1 * niEff_ + iG1)) continue;
+    if (!isActive(jG1 * niEff_ + iG )) continue;
     // SW, SE, NE, NW corners — global node indices (1-based)
     quadNodes.push_back({
         static_cast<atlas::gidx_t>(jG  * niEff_ + iG  + 1),
@@ -309,10 +331,10 @@ void GeometryMOM6::buildJediFunctionSpace(const eckit::mpi::Comm & comm,
       const int foldNE = niEff_ - 2 - iG;              // NE: reflected SE
       const int foldNW = niEff_ - 1 - iG;              // NW: reflected SW
       if (foldNE < 0) continue;                         // guard for tiny grids
-      if (activeMap.find(jG * niEff_ + iG)    == activeMap.end()) continue;
-      if (activeMap.find(jG * niEff_ + iG1)   == activeMap.end()) continue;
-      if (activeMap.find(jG * niEff_ + foldNE) == activeMap.end()) continue;
-      if (activeMap.find(jG * niEff_ + foldNW) == activeMap.end()) continue;
+      if (!isActive(jG * niEff_ + iG))     continue;
+      if (!isActive(jG * niEff_ + iG1))    continue;
+      if (!isActive(jG * niEff_ + foldNE)) continue;
+      if (!isActive(jG * niEff_ + foldNW)) continue;
       quadNodes.push_back({
           static_cast<atlas::gidx_t>(jG * niEff_ + iG     + 1),
           static_cast<atlas::gidx_t>(jG * niEff_ + iG1    + 1),
@@ -382,28 +404,27 @@ void GeometryMOM6::buildJediFunctionSpace(const eckit::mpi::Comm & comm,
 
 // ---------------------------------------------------------------------------
 // Populate mom6Fields_ on mom6FunctionSpace_ with geometry data for the
-// local MOM6 compute domain.  All input arrays are global (size
-// njGlobal*niGlobal, row-major); local slice is extracted here.
-void GeometryMOM6::buildMom6Fields(const std::vector<double> & lonGlobal,
-                                    const std::vector<double> & latGlobal,
-                                    const std::vector<double> & depthGlobal,
-                                    const std::vector<double> & wetGlobal,
-                                    const std::vector<double> & layerThicknessGlobal,
-                                    const std::vector<double> & layerCenterDepthGlobal,
-                                    const std::vector<double> & mask3dGlobal,
-                                    const std::vector<double> & dxTGlobal,
-                                    const std::vector<double> & dyTGlobal,
-                                    const std::vector<double> & areaTGlobal,
-                                    const std::vector<double> & lonUGlobal,
-                                    const std::vector<double> & latUGlobal,
-                                    const std::vector<double> & lonVGlobal,
-                                    const std::vector<double> & latVGlobal,
-                                    const std::vector<double> & cosRotGlobal,
-                                    const std::vector<double> & sinRotGlobal)
+// local MOM6 compute domain.  Input arrays hold this rank's block only
+// (row-major iCount_*jCount_; 3D arrays level-major).
+void GeometryMOM6::buildMom6Fields(const std::vector<double> & lon,
+                                    const std::vector<double> & lat,
+                                    const std::vector<double> & depth,
+                                    const std::vector<double> & wet,
+                                    const std::vector<double> & layerThickness,
+                                    const std::vector<double> & layerCenterDepth,
+                                    const std::vector<double> & mask3d,
+                                    const std::vector<double> & dxT,
+                                    const std::vector<double> & dyT,
+                                    const std::vector<double> & areaT,
+                                    const std::vector<double> & lonU,
+                                    const std::vector<double> & latU,
+                                    const std::vector<double> & lonV,
+                                    const std::vector<double> & latV,
+                                    const std::vector<double> & cosRot,
+                                    const std::vector<double> & sinRot)
 {
   const int npts = iCount_ * jCount_;
   mom6Fields_ = atlas::FieldSet();
-  const size_t nHoriz = static_cast<size_t>(njEff_) * niEff_;
 
   auto addField = [&](const std::string & name, int levels = 1) -> atlas::Field {
     atlas::Field f = mom6FunctionSpace_.createField<double>(
@@ -454,62 +475,46 @@ void GeometryMOM6::buildMom6Fields(const std::vector<double> & lonGlobal,
   auto vLonV  = atlas::array::make_view<double, 2>(fLonV);
   auto vLatV  = atlas::array::make_view<double, 2>(fLatV);
 
-  for (int jL = 0; jL < jCount_; ++jL) {
-    for (int iL = 0; iL < iCount_; ++iL) {
-      const int n    = jL * iCount_ + iL;
-      const int gIdx = (jStart_ - 1 + jL) * niEff_ + (iStart_ - 1 + iL);
-      vLon(n, 0)   = lonGlobal[gIdx];
-      vLat(n, 0)   = latGlobal[gIdx];
-      vDepth(n, 0) = depthGlobal[gIdx];
-      vMask(n, 0)  = wetGlobal[gIdx];
-      vDxT(n, 0)   = dxTGlobal[gIdx];
-      vDyT(n, 0)   = dyTGlobal[gIdx];
-      vAreaT(n, 0) = areaTGlobal[gIdx];
-      for (int k = 0; k < numLevels_; ++k) {
-        const size_t idx3D = static_cast<size_t>(k) * nHoriz + gIdx;
-        vLayerThickness(n, k) = layerThicknessGlobal[idx3D];
-        vLayerCenterDepth(n, k) = layerCenterDepthGlobal[idx3D];
-        vVertCoord(n, k) = layerCenterDepthGlobal[idx3D];
-        vMask3d(n, k) = mask3dGlobal[idx3D];
-      }
-      vLonU(n, 0)  = lonUGlobal[gIdx];
-      vLatU(n, 0)  = latUGlobal[gIdx];
-      vLonV(n, 0)  = lonVGlobal[gIdx];
-      vLatV(n, 0)  = latVGlobal[gIdx];
-      vCosRot(n, 0) = cosRotGlobal[gIdx];
-      vSinRot(n, 0) = sinRotGlobal[gIdx];
+  for (int n = 0; n < npts; ++n) {
+    vLon(n, 0)   = lon[n];
+    vLat(n, 0)   = lat[n];
+    vDepth(n, 0) = depth[n];
+    vMask(n, 0)  = wet[n];
+    vDxT(n, 0)   = dxT[n];
+    vDyT(n, 0)   = dyT[n];
+    vAreaT(n, 0) = areaT[n];
+    for (int k = 0; k < numLevels_; ++k) {
+      const size_t idx3D = static_cast<size_t>(k) * npts + n;
+      vLayerThickness(n, k) = layerThickness[idx3D];
+      vLayerCenterDepth(n, k) = layerCenterDepth[idx3D];
+      vVertCoord(n, k) = layerCenterDepth[idx3D];
+      vMask3d(n, k) = mask3d[idx3D];
     }
+    vLonU(n, 0)  = lonU[n];
+    vLatU(n, 0)  = latU[n];
+    vLonV(n, 0)  = lonV[n];
+    vLatV(n, 0)  = latV[n];
+    vCosRot(n, 0) = cosRot[n];
+    vSinRot(n, 0) = sinRot[n];
   }
 }
 
 // ---------------------------------------------------------------------------
-// Populate fields_ on the JEDI unstructured functionSpace_ from global arrays.
-// Node ordering follows jediPoints_ (owned nodes first, then ghost nodes).
-void GeometryMOM6::buildFields(const std::vector<double> & lonGlobal,
-                                const std::vector<double> & latGlobal,
-                                const std::vector<double> & depthGlobal,
-                                const std::vector<double> & wetGlobal,
-                                const std::vector<double> & layerThicknessGlobal,
-                                const std::vector<double> & layerCenterDepthGlobal,
-                                const std::vector<double> & mask3dGlobal,
-                                const std::vector<double> & dxTGlobal,
-                                const std::vector<double> & dyTGlobal,
-                                const std::vector<double> & areaTGlobal,
-                                const std::vector<double> & lonUGlobal,
-                                const std::vector<double> & latUGlobal,
-                                const std::vector<double> & lonVGlobal,
-                                const std::vector<double> & latVGlobal,
-                                const std::vector<double> & cosRotGlobal,
-                                const std::vector<double> & sinRotGlobal,
-                                bool buildVerticalGeometry)
+// Populate fields_ on the JEDI unstructured functionSpace_.  Owned nodes are
+// scattered from mom6Fields_ (each (iG, jG) lives on exactly one MOM6 rank);
+// ghost and build_halo nodes are then filled by halo exchange from their
+// owners.  Node ordering follows jediPoints_ (owned first, then ghost).
+void GeometryMOM6::buildFields(bool buildVerticalGeometry)
 {
-  const int npts = static_cast<int>(jediPoints_.size());  // owned + ghost
   fields_ = atlas::FieldSet();
-  const size_t nHoriz = static_cast<size_t>(njEff_) * niEff_;
 
+  // Fields start as NaN so that any node the scatter + halo exchange below
+  // does not reach is caught, instead of silently carrying garbage.
   auto addField = [&](const std::string & name, int levels = 1) -> atlas::Field {
     atlas::Field f = functionSpace_.createField<double>(
         atlas::option::name(name) | atlas::option::levels(levels));
+    auto v = atlas::array::make_view<double, 2>(f);
+    v.assign(std::numeric_limits<double>::quiet_NaN());
     fields_.add(f);
     return f;
   };
@@ -527,133 +532,78 @@ void GeometryMOM6::buildFields(const std::vector<double> & lonGlobal,
     vOwned(n, 0) = (n < ownedCount_) ? 1 : 0;
   fields_.add(fOwned);
 
-  atlas::Field fLon   = addField("lon");
-  atlas::Field fLat   = addField("lat");
-  atlas::Field fMask  = addField("mask2d");
-  atlas::Field fDepth = addField("depth");
-  atlas::Field fDxT   = addField("dxT");
-  atlas::Field fDyT   = addField("dyT");
-  atlas::Field fArea  = addField("area");   // called "area" for SABER diffusion
-  atlas::Field fLonU  = addField("lonu");
-  atlas::Field fLatU  = addField("latu");
-  atlas::Field fLonV  = addField("lonv");
-  atlas::Field fLatV  = addField("latv");
-  atlas::Field fAreaT = addField("areaT");  // MOM6-native alias for area
-  // Grid rotation (clockwise angle of grid north from true north) used to
-  // rotate C-grid velocities to/from eastward/northward
-  atlas::Field fCosRot = addField("cos_rot");
-  atlas::Field fSinRot = addField("sin_rot");
-
-  atlas::Field fLayerThickness;
-  atlas::Field fLayerCenterDepth;
-  atlas::Field fVertCoord;
-  // mask3d is always registered: the masked-cell flood fill depends on it, and
-  // mask3dGlobal is computed whether or not vertical geometry is read (without
-  // it, the surface wet mask is simply extruded to all levels).
-  atlas::Field fMask3d = addField("mask3d", numLevels_);
+  // JEDI field name ← MOM6 field name.  "area" is the SABER diffusion name,
+  // "areaT" the MOM6-native alias.  mask3d is always registered: the
+  // masked-cell flood fill depends on it (without vertical geometry the
+  // surface wet mask is simply extruded to all levels).
+  std::vector<std::pair<std::string, std::string>> fromMom6 = {
+      {"lon", "lon"}, {"lat", "lat"}, {"mask2d", "mask2d"}, {"depth", "depth"},
+      {"dxT", "dxT"}, {"dyT", "dyT"}, {"area", "areaT"},
+      {"lonu", "lonu"}, {"latu", "latu"}, {"lonv", "lonv"}, {"latv", "latv"},
+      {"areaT", "areaT"}, {"mask3d", "mask3d"},
+      {"cos_rot", "cos_rot"}, {"sin_rot", "sin_rot"}};
   if (buildVerticalGeometry) {
-    fLayerThickness = addField("sea_water_cell_thickness", numLevels_);
-    fLayerCenterDepth = addField("sea_water_depth", numLevels_);
-    fVertCoord = addField("vert_coord", numLevels_);
+    fromMom6.push_back({"sea_water_cell_thickness", "sea_water_cell_thickness"});
+    fromMom6.push_back({"sea_water_depth", "sea_water_depth"});
+  }
+  for (const auto & names : fromMom6) {
+    const atlas::Field & src = mom6Fields_.field(names.second);
+    atlas::Field dst = addField(names.first, src.shape(1));
+    scatterToJedi(src, &dst);
   }
 
-  auto vLon   = atlas::array::make_view<double, 2>(fLon);
-  auto vLat   = atlas::array::make_view<double, 2>(fLat);
-  auto vMask  = atlas::array::make_view<double, 2>(fMask);
-  auto vDepth = atlas::array::make_view<double, 2>(fDepth);
-  auto vDxT   = atlas::array::make_view<double, 2>(fDxT);
-  auto vDyT   = atlas::array::make_view<double, 2>(fDyT);
-  auto vArea  = atlas::array::make_view<double, 2>(fArea);
-  auto vLonU  = atlas::array::make_view<double, 2>(fLonU);
-  auto vLatU  = atlas::array::make_view<double, 2>(fLatU);
-  auto vLonV  = atlas::array::make_view<double, 2>(fLonV);
-  auto vLatV  = atlas::array::make_view<double, 2>(fLatV);
-  auto vAreaT = atlas::array::make_view<double, 2>(fAreaT);
-
+  // Level index (1-based), as in SOCA: SABER vertical length-scales are
+  // then expressed in number of levels.
   if (buildVerticalGeometry) {
-    auto vLayerThickness = atlas::array::make_view<double, 2>(fLayerThickness);
-    auto vLayerCenterDepth = atlas::array::make_view<double, 2>(fLayerCenterDepth);
+    atlas::Field fVertCoord = addField("vert_coord", numLevels_);
     auto vVertCoord = atlas::array::make_view<double, 2>(fVertCoord);
-    for (int n = 0; n < npts; ++n) {
-      const int iG   = jediPoints_[n].first;
-      const int jG   = jediPoints_[n].second;
-      const int gIdx = jG * niEff_ + iG;
-      vLon(n, 0)   = lonGlobal[gIdx];
-      vLat(n, 0)   = latGlobal[gIdx];
-      vDepth(n, 0) = depthGlobal[gIdx];
-      vMask(n, 0)  = wetGlobal[gIdx];
-      vDxT(n, 0)   = dxTGlobal[gIdx];
-      vDyT(n, 0)   = dyTGlobal[gIdx];
-      vArea(n, 0)  = areaTGlobal[gIdx];
-      for (int k = 0; k < numLevels_; ++k) {
-        const size_t idx3D = static_cast<size_t>(k) * nHoriz + gIdx;
-        vLayerThickness(n, k) = layerThicknessGlobal[idx3D];
-        vLayerCenterDepth(n, k) = layerCenterDepthGlobal[idx3D];
-        vVertCoord(n, k) = layerCenterDepthGlobal[idx3D];
-      }
-      vAreaT(n, 0) = areaTGlobal[gIdx];
-      vLonU(n, 0)  = lonUGlobal[gIdx];
-      vLatU(n, 0)  = latUGlobal[gIdx];
-      vLonV(n, 0)  = lonVGlobal[gIdx];
-      vLatV(n, 0)  = latVGlobal[gIdx];
-    }
-  } else {
-    for (int n = 0; n < npts; ++n) {
-      const int iG   = jediPoints_[n].first;
-      const int jG   = jediPoints_[n].second;
-      const int gIdx = jG * niEff_ + iG;
-      vLon(n, 0)   = lonGlobal[gIdx];
-      vLat(n, 0)   = latGlobal[gIdx];
-      vDepth(n, 0) = depthGlobal[gIdx];
-      vMask(n, 0)  = wetGlobal[gIdx];
-      vDxT(n, 0)   = dxTGlobal[gIdx];
-      vDyT(n, 0)   = dyTGlobal[gIdx];
-      vArea(n, 0)  = areaTGlobal[gIdx];
-      vAreaT(n, 0) = areaTGlobal[gIdx];
-      vLonU(n, 0)  = lonUGlobal[gIdx];
-      vLatU(n, 0)  = latUGlobal[gIdx];
-      vLonV(n, 0)  = lonVGlobal[gIdx];
-      vLatV(n, 0)  = latVGlobal[gIdx];
-    }
+    for (atlas::idx_t n = 0; n < fVertCoord.shape(0); ++n)
+      for (int k = 0; k < numLevels_; ++k)
+        vVertCoord(n, k) = static_cast<double>(k + 1);
   }
 
-  {
-    auto vCosRot = atlas::array::make_view<double, 2>(fCosRot);
-    auto vSinRot = atlas::array::make_view<double, 2>(fSinRot);
-    for (int n = 0; n < npts; ++n) {
-      const int gIdx = jediPoints_[n].second * niEff_ + jediPoints_[n].first;
-      vCosRot(n, 0) = cosRotGlobal[gIdx];
-      vSinRot(n, 0) = sinRotGlobal[gIdx];
-    }
-  }
-
-  // Fill mask3d unconditionally (registered above regardless of vertical
-  // geometry) so the masked-cell flood fill always has a per-level mask.
-  {
-    auto vMask3d = atlas::array::make_view<double, 2>(fMask3d);
-    for (int n = 0; n < npts; ++n) {
-      const int iG   = jediPoints_[n].first;
-      const int jG   = jediPoints_[n].second;
-      const int gIdx = jG * niEff_ + iG;
-      for (int k = 0; k < numLevels_; ++k) {
-        const size_t idx3D = static_cast<size_t>(k) * nHoriz + gIdx;
-        vMask3d(n, k) = mask3dGlobal[idx3D];
-      }
-    }
-  }
-
-  // Halo-exchange the geometry fields so that the periodic / northern-fold halo
-  // nodes added by build_halo (which the jediPoints_ loop above does not cover)
-  // carry valid owner values. Without this, downstream consumers that iterate
-  // every functionspace node - notably the land-mask flood fill, which seeds on
-  // mask3d - read uninitialised halo memory, giving non-reproducible results
-  // run to run. "owned" is excluded: it must stay 1 on owned / 0 on ghost.
+  // Halo-exchange the geometry fields so that ghost nodes and the periodic /
+  // northern-fold halo nodes added by build_halo carry valid owner values.
+  // Without this, downstream consumers that iterate every functionspace node -
+  // notably the land-mask flood fill, which seeds on mask3d - read
+  // uninitialised memory, giving non-reproducible results run to run.
+  // "owned" is excluded: it must stay 1 on owned / 0 on ghost.
   {
     atlas::functionspace::NodeColumns fsHalo(functionSpace_);
     for (auto & f : fields_) {
       if (f.name() == "owned") continue;
       fsHalo.haloExchange(f);
     }
+  }
+  {
+    size_t nUnset = 0;
+    for (const auto & f : fields_) {
+      if (f.datatype() != atlas::array::DataType::kind<double>()) continue;
+      auto v = atlas::array::make_view<double, 2>(f);
+      for (atlas::idx_t n = 0; n < v.shape(0); ++n)
+        for (atlas::idx_t k = 0; k < v.shape(1); ++k)
+          if (std::isnan(v(n, k))) ++nUnset;
+    }
+    if (nUnset > 0)
+      throw eckit::Exception("GeometryMOM6::buildFields: " + std::to_string(nUnset)
+                             + " JEDI node values not set by scatter + halo exchange",
+                             Here());
+  }
+
+  // "gmask": the geographical mask BUMP looks up by name (1 = ocean, 0 = land).
+  // As in SOCA, the surface wet mask is extruded to all levels: a per-level
+  // mask3d makes every level distinct and NICAS calibration prohibitively
+  // expensive at depth. Built from the halo-exchanged mask2d so it is valid on
+  // every functionspace node.
+  {
+    atlas::Field fGmask = functionSpace_.createField<int>(
+        atlas::option::name("gmask") | atlas::option::levels(numLevels_));
+    auto vGmask = atlas::array::make_view<int, 2>(fGmask);
+    auto vMask  = atlas::array::make_view<double, 2>(fields_.field("mask2d"));
+    for (atlas::idx_t n = 0; n < fGmask.shape(0); ++n)
+      for (int k = 0; k < numLevels_; ++k)
+        vGmask(n, k) = vMask(n, 0) > 0.5 ? 1 : 0;
+    fields_.add(fGmask);
   }
 
   // TODO(guillaumevernieres): buildDistFromCoast is too slow at high resolution.
@@ -738,34 +688,36 @@ void GeometryMOM6::buildScatterMap()
   scatterMap_.mom6LocalIdx.resize(ownedCount_);
 
   for (int n = 0; n < ownedCount_; ++n) {
-    const int iG = jediPoints_[n].first;
-    const int jG = jediPoints_[n].second;
-
-    // Find MOM6 piX (i-rank) and piY (j-rank) owning (iG, jG)
-    const int baseX  = niEff_ / layoutX_;
-    const int extraX = niEff_ % layoutX_;
-    const int piX    = (iG < extraX * (baseX + 1))
-                       ? iG / (baseX + 1)
-                       : extraX + (iG - extraX * (baseX + 1)) / baseX;
-
-    const int baseY  = njEff_ / layoutY_;
-    const int extraY = njEff_ % layoutY_;
-    const int piY    = (jG < extraY * (baseY + 1))
-                       ? jG / (baseY + 1)
-                       : extraY + (jG - extraY * (baseY + 1)) / baseY;
-
-    scatterMap_.mom6Rank[n] = piX * layoutY_ + piY;
-
-    // 0-based start of that tile
-    int iStart0 = 0;
-    for (int k = 0; k < piX; ++k) iStart0 += mom6::computeExtent(niEff_, layoutX_, k);
-    int jStart0 = 0;
-    for (int k = 0; k < piY; ++k) jStart0 += mom6::computeExtent(njEff_, layoutY_, k);
-
-    scatterMap_.mom6LocalIdx[n] =
-        (jG - jStart0) * mom6::computeExtent(niEff_, layoutX_, piX)
-        + (iG - iStart0);
+    const auto owner = mom6Owner(jediPoints_[n].first, jediPoints_[n].second);
+    scatterMap_.mom6Rank[n] = owner.first;
+    scatterMap_.mom6LocalIdx[n] = owner.second;
   }
+}
+
+// ---------------------------------------------------------------------------
+std::pair<int, int> GeometryMOM6::mom6Owner(const int iG, const int jG) const
+{
+  // Find MOM6 piX (i-rank) and piY (j-rank) owning (iG, jG)
+  const int baseX  = niEff_ / layoutX_;
+  const int extraX = niEff_ % layoutX_;
+  const int piX    = (iG < extraX * (baseX + 1))
+                     ? iG / (baseX + 1)
+                     : extraX + (iG - extraX * (baseX + 1)) / baseX;
+
+  const int baseY  = njEff_ / layoutY_;
+  const int extraY = njEff_ % layoutY_;
+  const int piY    = (jG < extraY * (baseY + 1))
+                     ? jG / (baseY + 1)
+                     : extraY + (jG - extraY * (baseY + 1)) / baseY;
+
+  // 0-based start of that tile
+  int iStart0 = 0;
+  for (int k = 0; k < piX; ++k) iStart0 += mom6::computeExtent(niEff_, layoutX_, k);
+  int jStart0 = 0;
+  for (int k = 0; k < piY; ++k) jStart0 += mom6::computeExtent(njEff_, layoutY_, k);
+
+  return {piX * layoutY_ + piY,
+          (jG - jStart0) * mom6::computeExtent(niEff_, layoutX_, piX) + (iG - iStart0)};
 }
 
 // ---------------------------------------------------------------------------
@@ -835,26 +787,30 @@ void GeometryMOM6::scatterToJedi(const atlas::Field & mom6Field,
   const int npes  = static_cast<int>(comm_.size());
   const int nSend = exchangePlan_.sendDispl[npes-1]
                   + exchangePlan_.sendCounts[npes-1];
+  const int nlev  = static_cast<int>(mom6Field.shape(1));
+  ASSERT(jediField->shape(1) == nlev);
 
-  // MOM6 side: pack values at the requested local indices
+  // MOM6 side: pack values at the requested local indices (all levels)
   auto vMom6 = atlas::array::make_view<double, 2>(mom6Field);
-  std::vector<double> sendBuf(nSend);
+  std::vector<double> sendBuf(static_cast<size_t>(nSend) * nlev);
   for (int i = 0; i < nSend; ++i)
-    sendBuf[i] = vMom6(exchangePlan_.sendLocalIdx[i], 0);
+    for (int k = 0; k < nlev; ++k)
+      sendBuf[static_cast<size_t>(i) * nlev + k] = vMom6(exchangePlan_.sendLocalIdx[i], k);
 
   // AllToAllv: MOM6 ranks → JEDI ranks
-  std::vector<double> recvBuf(ownedCount_);
+  std::vector<double> recvBuf(static_cast<size_t>(ownedCount_) * nlev);
   comm_.allToAllv(sendBuf.data(),
-                  exchangePlan_.sendCounts.data(),
-                  exchangePlan_.sendDispl.data(),
+                  perValue(exchangePlan_.sendCounts, nlev).data(),
+                  perValue(exchangePlan_.sendDispl, nlev).data(),
                   recvBuf.data(),
-                  exchangePlan_.recvCounts.data(),
-                  exchangePlan_.recvDispl.data());
+                  perValue(exchangePlan_.recvCounts, nlev).data(),
+                  perValue(exchangePlan_.recvDispl, nlev).data());
 
   // JEDI side: unpack into owned positions using the recvOrder permutation
   auto vJedi = atlas::array::make_view<double, 2>(*jediField);
   for (int i = 0; i < ownedCount_; ++i)
-    vJedi(exchangePlan_.recvOrder[i], 0) = recvBuf[i];
+    for (int k = 0; k < nlev; ++k)
+      vJedi(exchangePlan_.recvOrder[i], k) = recvBuf[static_cast<size_t>(i) * nlev + k];
 }
 
 // ---------------------------------------------------------------------------
@@ -867,26 +823,30 @@ void GeometryMOM6::gatherFromJedi(const atlas::Field & jediField,
   const int npes  = static_cast<int>(comm_.size());
   const int nRecv = exchangePlan_.sendDispl[npes-1]
                   + exchangePlan_.sendCounts[npes-1];
+  const int nlev  = static_cast<int>(jediField.shape(1));
+  ASSERT(mom6Field->shape(1) == nlev);
 
-  // JEDI side: pack owned values in the same order scatter used
+  // JEDI side: pack owned values in the same order scatter used (all levels)
   auto vJedi = atlas::array::make_view<double, 2>(jediField);
-  std::vector<double> sendBuf(ownedCount_);
+  std::vector<double> sendBuf(static_cast<size_t>(ownedCount_) * nlev);
   for (int i = 0; i < ownedCount_; ++i)
-    sendBuf[i] = vJedi(exchangePlan_.recvOrder[i], 0);
+    for (int k = 0; k < nlev; ++k)
+      sendBuf[static_cast<size_t>(i) * nlev + k] = vJedi(exchangePlan_.recvOrder[i], k);
 
   // AllToAllv: JEDI → MOM6 (send/recv descriptors transposed vs scatter)
-  std::vector<double> recvBuf(nRecv);
+  std::vector<double> recvBuf(static_cast<size_t>(nRecv) * nlev);
   comm_.allToAllv(sendBuf.data(),
-                  exchangePlan_.recvCounts.data(),
-                  exchangePlan_.recvDispl.data(),
+                  perValue(exchangePlan_.recvCounts, nlev).data(),
+                  perValue(exchangePlan_.recvDispl, nlev).data(),
                   recvBuf.data(),
-                  exchangePlan_.sendCounts.data(),
-                  exchangePlan_.sendDispl.data());
+                  perValue(exchangePlan_.sendCounts, nlev).data(),
+                  perValue(exchangePlan_.sendDispl, nlev).data());
 
   // MOM6 side: unpack at the originally requested local indices
   auto vMom6 = atlas::array::make_view<double, 2>(*mom6Field);
   for (int i = 0; i < nRecv; ++i)
-    vMom6(exchangePlan_.sendLocalIdx[i], 0) = recvBuf[i];
+    for (int k = 0; k < nlev; ++k)
+      vMom6(exchangePlan_.sendLocalIdx[i], k) = recvBuf[static_cast<size_t>(i) * nlev + k];
 }
 
 // ---------------------------------------------------------------------------
@@ -986,6 +946,10 @@ GeometryMOM6::GeometryMOM6(const eckit::Configuration & conf,
   levelsAreTopDown = true;
 
   util::Timer ctorTimer("ijedi::GeometryMOM6", "GeometryMOM6");
+  // Peak resident memory (min/max over tasks) after each construction stage.
+  auto memStats = [&comm](const std::string & stage) {
+    util::printRunStats("GeometryMOM6 " + stage, true, comm);
+  };
 
   {
     util::Timer timer("ijedi::GeometryMOM6", "configure");
@@ -1052,27 +1016,11 @@ GeometryMOM6::GeometryMOM6(const eckit::Configuration & conf,
                      << " jCount=" << jCount_ << std::endl;
   }
 
-  // 3. Read global grid arrays (all ranks read identically)
+  // 3. Read this rank's MOM6 block (hyperslabs: no global arrays)
   const std::string hgridPath = conf.getString("ocean_hgrid");
   const std::string topogPath = conf.getString("ocean_topog");
   const bool buildVerticalGeometry = conf.has("vertical geometry from");
-
-  std::vector<double> lon, lat, dxT, dyT, areaT, lonU, latU, lonV, latV, cosRot, sinRot;
-  {
-    util::Timer timer("ijedi::GeometryMOM6", "readHgrid");
-    mom6::readHgrid(hgridPath,
-                    niGlobal_, njGlobal_, niEff_, njEff_, coarsenFactor_,
-                    &lon, &lat, &dxT, &dyT, &areaT, &lonU, &latU, &lonV, &latV,
-                    &cosRot, &sinRot);
-  }
-
-  std::vector<double> depth, wet;
-  {
-    util::Timer timer("ijedi::GeometryMOM6", "readTopog");
-    mom6::readTopog(topogPath,
-                    niGlobal_, njGlobal_, niEff_, njEff_, coarsenFactor_, minimumDepth_,
-                    &depth, &wet);
-  }
+  const mom6::Block block{iStart_ - 1, jStart_ - 1, iCount_, jCount_};
 
   if (conf.has("minimum layer thickness")) {
     minimumThickness_ = conf.getDouble("minimum layer thickness");
@@ -1081,114 +1029,108 @@ GeometryMOM6::GeometryMOM6(const eckit::Configuration & conf,
     minimumThickness_ = conf.getDouble("minimum_layer_thickness", 1e-6);
   }
 
-  const size_t nHoriz3d = static_cast<size_t>(njEff_) * niEff_;
-  std::vector<double> layerThickness(static_cast<size_t>(numLevels_) * nHoriz3d,
-                                     minimumThickness_);
-  std::vector<double> layerCenterDepth(static_cast<size_t>(numLevels_) * nHoriz3d, 0.0);
-  if (buildVerticalGeometry) {
-    const std::string verticalGeomPath = conf.getString("vertical geometry from");
-    util::Timer timer("ijedi::GeometryMOM6", "readVerticalGeometry");
-    mom6::readVerticalGeometry(verticalGeomPath,
-                               niGlobal_, njGlobal_, niEff_, njEff_, numLevels_,
-                               coarsenFactor_,
-                               &layerThickness, &layerCenterDepth);
-  } else {
-    oops::Log::info() << "GeometryMOM6: skipping vertical geometry read"
-                      << " (vertical geometry from not provided)" << std::endl;
-  }
-
-  // Build 3D mask: ocean (1.0) where surface is wet and layer thickness
-  // is >= minimumThickness_. Once a thin layer is encountered top-down,
-  // all deeper layers are also masked (sealed = land).
-  std::vector<double> mask3d(static_cast<size_t>(numLevels_) * nHoriz3d, 0.0);
   {
-    util::Timer timer("ijedi::GeometryMOM6", "buildMask3d");
+    std::vector<double> lon, lat, dxT, dyT, areaT, lonU, latU, lonV, latV, cosRot, sinRot;
+    {
+      util::Timer timer("ijedi::GeometryMOM6", "readHgrid");
+      mom6::readHgridBlock(hgridPath, coarsenFactor_, block,
+                           &lon, &lat, &dxT, &dyT, &areaT, &lonU, &latU, &lonV, &latV,
+                           &cosRot, &sinRot);
+    }
+    memStats("readHgrid");
+
+    std::vector<double> depth, wet;
+    {
+      util::Timer timer("ijedi::GeometryMOM6", "readTopog");
+      mom6::readTopogBlock(topogPath, coarsenFactor_, minimumDepth_, block, &depth, &wet);
+    }
+    memStats("readTopog");
+
+    const size_t nLocal = block.size();
+    std::vector<double> layerThickness, layerCenterDepth;
     if (buildVerticalGeometry) {
-      for (size_t n = 0; n < nHoriz3d; ++n) {
+      const std::string verticalGeomPath = conf.getString("vertical geometry from");
+      util::Timer timer("ijedi::GeometryMOM6", "readVerticalGeometry");
+      mom6::readVerticalGeometryBlock(verticalGeomPath, niGlobal_, njGlobal_, numLevels_,
+                                      coarsenFactor_, block,
+                                      &layerThickness, &layerCenterDepth);
+    } else {
+      layerThickness.assign(static_cast<size_t>(numLevels_) * nLocal, minimumThickness_);
+      layerCenterDepth.assign(static_cast<size_t>(numLevels_) * nLocal, 0.0);
+      oops::Log::info() << "GeometryMOM6: skipping vertical geometry read"
+                        << " (vertical geometry from not provided)" << std::endl;
+    }
+    memStats("readVerticalGeometry");
+
+    // Build 3D mask: ocean (1.0) where surface is wet and layer thickness
+    // is >= minimumThickness_. Once a thin layer is encountered top-down,
+    // all deeper layers are also masked (sealed = land).  Without vertical
+    // geometry the surface wet mask is extruded to all levels.
+    std::vector<double> mask3d(static_cast<size_t>(numLevels_) * nLocal, 0.0);
+    {
+      util::Timer timer("ijedi::GeometryMOM6", "buildMask3d");
+      for (size_t n = 0; n < nLocal; ++n) {
         if (wet[n] < 0.5) continue;  // surface land → all layers stay 0
         bool sealed = false;
         for (int k = 0; k < numLevels_; ++k) {
-          const size_t idx = static_cast<size_t>(k) * nHoriz3d + n;
-          if (!sealed && layerThickness[idx] < minimumThickness_) sealed = true;
+          const size_t idx = static_cast<size_t>(k) * nLocal + n;
+          if (buildVerticalGeometry && !sealed &&
+              layerThickness[idx] < minimumThickness_) sealed = true;
           mask3d[idx] = sealed ? 0.0 : 1.0;
         }
       }
-    } else {
-      for (size_t n = 0; n < nHoriz3d; ++n) {
-        if (wet[n] < 0.5) continue;
-        for (int k = 0; k < numLevels_; ++k) {
-          const size_t idx = static_cast<size_t>(k) * nHoriz3d + n;
-          mask3d[idx] = 1.0;
-        }
-      }
+    }
+
+    // 4. MOM6 structured function space and fields (local compute domain)
+    {
+      util::Timer timer("ijedi::GeometryMOM6", "buildMom6FunctionSpace");
+      buildMom6FunctionSpace(comm, lon, lat);
+    }
+    {
+      util::Timer timer("ijedi::GeometryMOM6", "buildMom6Fields");
+      buildMom6Fields(lon, lat, depth, wet, layerThickness, layerCenterDepth,
+                      mask3d, dxT, dyT, areaT, lonU, latU, lonV, latV, cosRot, sinRot);
     }
   }
+  memStats("buildMom6Fields");
 
-  // 4. MOM6 structured function space and fields (local compute domain)
+  // 5. JEDI unstructured function space (ocean + retained fringe).  The
+  //    partitioner needs the global wet mask and T-point lon/lat; nothing
+  //    else is global, and these are released right after.
   {
-    util::Timer timer("ijedi::GeometryMOM6", "buildMom6FunctionSpace");
-    buildMom6FunctionSpace(comm, lon, lat);
-  }
-  {
-    util::Timer timer("ijedi::GeometryMOM6", "buildMom6Fields");
-    buildMom6Fields(lon, lat, depth, wet, layerThickness, layerCenterDepth,
-                    mask3d, dxT, dyT, areaT,
-                    lonU, latU, lonV, latV, cosRot, sinRot);
-  }
-
-  // 5. JEDI unstructured function space and fields (ocean + retained fringe)
-  {
+    std::vector<double> lonGlobal, latGlobal, depthGlobal, wetGlobal;
+    {
+      util::Timer timer("ijedi::GeometryMOM6", "readGlobalLonLatWet");
+      mom6::readHgridLonLat(hgridPath, niGlobal_, niEff_, njEff_, coarsenFactor_,
+                            &lonGlobal, &latGlobal);
+      mom6::readTopogBlock(topogPath, coarsenFactor_, minimumDepth_,
+                           mom6::Block{0, 0, niEff_, njEff_}, &depthGlobal, &wetGlobal);
+      std::vector<double>().swap(depthGlobal);
+    }
+    memStats("readGlobalLonLatWet");
     util::Timer timer("ijedi::GeometryMOM6", "buildJediFunctionSpace");
-    buildJediFunctionSpace(comm, wet, lon, lat);
+    buildJediFunctionSpace(comm, wetGlobal, lonGlobal, latGlobal);
+  }
+  memStats("buildJediFunctionSpace");
+
+  // 6. Scatter/gather map and exchange plan: JEDI ↔ MOM6.  Always built:
+  //    the JEDI-space geometry fields are scattered from mom6Fields_.
+  {
+    util::Timer timer("ijedi::GeometryMOM6", "buildScatterMap");
+    buildScatterMap();
+  }
+  {
+    util::Timer timer("ijedi::GeometryMOM6", "buildExchangePlan");
+    buildExchangePlan();
   }
   {
     util::Timer timer("ijedi::GeometryMOM6", "buildFields");
-    buildFields(lon, lat, depth, wet, layerThickness, layerCenterDepth,
-                mask3d, dxT, dyT, areaT, lonU, latU, lonV, latV,
-                cosRot, sinRot, buildVerticalGeometry);
+    buildFields(buildVerticalGeometry);
   }
-
-  // Release temporary global arrays now that local fieldsets are built.
-  auto release = [](std::vector<double> & v) {
-    std::vector<double>().swap(v);
-  };
-  release(lon);
-  release(lat);
-  release(dxT);
-  release(dyT);
-  release(areaT);
-  release(lonU);
-  release(latU);
-  release(lonV);
-  release(latV);
-  release(cosRot);
-  release(sinRot);
-  release(depth);
-  release(wet);
-  release(layerThickness);
-  release(layerCenterDepth);
-  release(mask3d);
-
-  // 6. Scatter/gather map and exchange plan: JEDI ↔ MOM6
-  const bool buildScatterExchange =
-      conf.getBool("JEDI/MOM6 scatter/gather exchange plan", true);
-  if (buildScatterExchange) {
-    {
-      util::Timer timer("ijedi::GeometryMOM6", "buildScatterMap");
-      buildScatterMap();
-    }
-    {
-      util::Timer timer("ijedi::GeometryMOM6", "buildExchangePlan");
-      buildExchangePlan();
-    }
-    if (conf.getBool("check scatter map", false)) {
-      util::Timer timer("ijedi::GeometryMOM6", "checkScatterMap");
-      checkScatterMap();
-    }
-  } else {
-    oops::Log::info() << "GeometryMOM6: skipping scatter/gather map and exchange plan"
-                      << " (JEDI/MOM6 scatter/gather exchange plan=false)"
-                      << std::endl;
+  memStats("buildFields");
+  if (conf.getBool("check scatter map", false)) {
+    util::Timer timer("ijedi::GeometryMOM6", "checkScatterMap");
+    checkScatterMap();
   }
 
   // 7. Optionally save grids to NetCDF / debug files
@@ -1226,6 +1168,7 @@ GeometryMOM6::GeometryMOM6(const eckit::Configuration & conf,
     geomVariables.set("has northern fold", hasFold_);
   }
 
+  memStats("done");
   oops::Log::trace() << "GeometryMOM6 constructor done" << std::endl;
 }
 
@@ -1381,7 +1324,8 @@ void GeometryMOM6::saveGrid(const std::string & filename,
   // "lon" and "lat" are written automatically by Atlas writeFieldSet as node
   // coordinate variables; including them as fields causes a NetCDF name clash.
   // "owned" is a rank-partitioning artefact that is meaningless after reload.
-  static const std::unordered_set<std::string> skip = {"owned", "lon", "lat"};
+  // "gmask" is derived from mask3d at construction.
+  static const std::unordered_set<std::string> skip = {"owned", "lon", "lat", "gmask"};
   atlas::FieldSet toWrite;
   for (const auto & field : fields_) {
     if (!skip.count(field.name())) toWrite.add(field);
