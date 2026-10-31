@@ -98,8 +98,8 @@ namespace ijedi
     typedef mist::ModelAuxIncrement          ModelAuxIncrement;
     typedef mist::ModelAuxCovariance         ModelAuxCovariance;
     //typedef oops::UnstructuredInterpolator   LocalInterpolator;
-    typedef oops::AtlasInterpolator          LocalInterpolator;
     //typedef ijedi::LocalInterpolatorLandVector LocalInterpolator;
+    typedef oops::AtlasInterpolator          LocalInterpolator;
     typedef ufo::ObsLocalization<mist::GeometryIterator> ObsLocalization;
   };
 
