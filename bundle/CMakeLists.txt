@@ -73,6 +73,9 @@ if (BUILD_JEDI)
 endif()
 ecbuild_bundle(PROJECT ijedi SOURCE "../")
 
+#temp land vector incr
+ecbuild_bundle( PROJECT land-apply_jedi_incr GIT "https://github.com/NOAA-EMC/land-apply_jedi_incr.git" UPDATE BRANCH ijedi_landinc )
+
 # ===============================================================================
 # required repositories
 # ===============================================================================
