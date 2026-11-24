@@ -293,6 +293,8 @@ inline std::tuple<int, int, int, bool> resolve_fv3_seam_neighbor(
 void compute_quad_nodes(
     size_t ownedCount_,
     int N,
+    const std::vector<double> lons,
+    const std::vector<double> lats,
     const std::vector<int>& rank_tiles,
     const std::vector<int>& rank_i,
     const std::vector<int>& rank_j,
@@ -303,6 +305,29 @@ void compute_quad_nodes(
 {
   quadNodes.clear();
   quadGidx.clear();
+
+  // Great-circle distance check on the unit sphere (avoids polar convergence and 0/360 wrap issues)
+  // For a ~0.25 deg (C384) to ~1.0 deg (C96) cubed-sphere grid, 3.0 degrees (~333 km) safely
+  // allows stretched cubed-sphere corners while rejecting trans-oceanic jumps.
+  const double maxEdgeDeg = 3.0;
+  const double maxChordSq = std::pow(2.0 * std::sin((maxEdgeDeg * M_PI / 180.0) / 2.0), 2);
+
+  auto isValidEdge = [&](atlas::gidx_t gidxA, atlas::gidx_t gidxB) -> bool {
+    // Convert 1-based globalIdx to 0-based C++ vector index
+    const size_t idxA = static_cast<size_t>(gidxA - 1);
+    const size_t idxB = static_cast<size_t>(gidxB - 1);
+
+    const double rlonA = lons[idxA] * M_PI / 180.0;
+    const double rlatA = lats[idxA] * M_PI / 180.0;
+    const double rlonB = lons[idxB] * M_PI / 180.0;
+    const double rlatB = lats[idxB] * M_PI / 180.0;
+
+    const double dx = std::cos(rlatA) * std::cos(rlonA) - std::cos(rlatB) * std::cos(rlonB);
+    const double dy = std::cos(rlatA) * std::sin(rlonA) - std::cos(rlatB) * std::sin(rlonB);
+    const double dz = std::sin(rlatA) - std::sin(rlatB);
+
+    return (dx * dx + dy * dy + dz * dz) <= maxChordSq;
+  };
 
   // 1. Build local node table: (tile, i, j) -> 1-based globalIdx
   std::unordered_map<uint64_t, atlas::gidx_t> nodeLookup;
@@ -337,7 +362,20 @@ void compute_quad_nodes(
     auto it_NW = nodeLookup.find(pack_tile_ij(t_NW, i_NW, j_NW));
     if (it_NW == nodeLookup.end()) continue;
 
-    quadNodes.push_back({id_SW, it_SE->second, it_NE->second, it_NW->second});
+    atlas::gidx_t id_SE = it_SE->second;
+    atlas::gidx_t id_NE = it_NE->second;
+    atlas::gidx_t id_NW = it_NW->second;
+
+    // Skip quad if any of its 4 edges spans across an ocean/basin jump
+    if (!isValidEdge(id_SW, id_SE) ||
+        !isValidEdge(id_SE, id_NE) ||
+        !isValidEdge(id_NE, id_NW) ||
+        !isValidEdge(id_NW, id_SW)) {
+      continue;
+    }
+
+    quadNodes.push_back({id_SW, id_SE, id_NE, id_NW});    
+
   }
 
   // 3. Compute non-overlapping global cell indices across all MPI partitions
@@ -766,6 +804,7 @@ GeometryLandVector::SharedData::SharedData(const eckit::Configuration &config,
   compute_quad_nodes(
       ownedCount_,
       N,
+      lons, lats,
       rank_tiles, rank_i, rank_j,
       globalIdx,
       quadNodes, quadGidx,
