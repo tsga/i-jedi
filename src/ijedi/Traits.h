@@ -45,10 +45,10 @@ namespace ijedi
     typedef mist::ModelAuxControl            ModelAuxControl;
     typedef mist::ModelAuxIncrement          ModelAuxIncrement;
     typedef mist::ModelAuxCovariance         ModelAuxCovariance;
-    //typedef oops::UnstructuredInterpolator   LocalInterpolator;
+    typedef oops::UnstructuredInterpolator   LocalInterpolator;
     // Bind custom KNN local interpolator here!
     //typedef ijedi::LocalInterpolatorLandVector LocalInterpolator;
-    typedef oops::AtlasInterpolator          LocalInterpolator;
+    //typedef oops::AtlasInterpolator          LocalInterpolator;
     typedef ufo::ObsLocalization<mist::GeometryIterator> ObsLocalization;
   };
 
@@ -73,9 +73,9 @@ namespace ijedi
     typedef mist::ModelAuxControl            ModelAuxControl;
     typedef mist::ModelAuxIncrement          ModelAuxIncrement;
     typedef mist::ModelAuxCovariance         ModelAuxCovariance;
-    //typedef oops::UnstructuredInterpolator   LocalInterpolator;
+    typedef oops::UnstructuredInterpolator   LocalInterpolator;
     //typedef ijedi::LocalInterpolatorLandVector LocalInterpolator;
-    typedef oops::AtlasInterpolator          LocalInterpolator;
+    //typedef oops::AtlasInterpolator          LocalInterpolator;
     typedef ufo::ObsLocalization<mist::GeometryIterator> ObsLocalization;
   };
 
@@ -97,9 +97,9 @@ namespace ijedi
     typedef mist::ModelAuxControl            ModelAuxControl;
     typedef mist::ModelAuxIncrement          ModelAuxIncrement;
     typedef mist::ModelAuxCovariance         ModelAuxCovariance;
-    //typedef oops::UnstructuredInterpolator   LocalInterpolator;
+    typedef oops::UnstructuredInterpolator   LocalInterpolator;
     //typedef ijedi::LocalInterpolatorLandVector LocalInterpolator;
-    typedef oops::AtlasInterpolator          LocalInterpolator;
+    //typedef oops::AtlasInterpolator          LocalInterpolator;
     typedef ufo::ObsLocalization<mist::GeometryIterator> ObsLocalization;
   };
 

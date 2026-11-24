@@ -79,8 +79,9 @@ class IOLandVectorParameters : public IoParametersBase {
                                       this};
 
   // Geometry var names
-  oops::Parameter<std::string> locationName{"location dime name", "location dim name", "location", this};
+  oops::Parameter<std::string> locationName{"location dim name", "location dim name", "location", this};
   oops::Parameter<std::string> layerName{"layer dim name", "layer dim name", "soil_levels", this};
+  oops::Parameter<int> num_layers{"num layers", "num layers", 4, this};
   oops::Parameter<std::string> timeName{"time dim name", "time dim name", "time", this};
 
 };

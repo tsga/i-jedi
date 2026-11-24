@@ -99,7 +99,8 @@ class GeometryLandVector : public GeometryBase {
                   atlas::FieldSet &, bool &, int &);
    
     void readLatLonElevFromFile(const std::string, const std::string, const std::string, const std::string,
-      std::vector<double> &, std::vector<double> &, std::vector<double> &);
+      std::vector<double> &, std::vector<double> &, std::vector<double> &,
+       std::vector<int>&, std::vector<int>&, std::vector<int>& );
   
     // Spatial metadata accessors
     size_t globalNodeCount() const;
@@ -117,7 +118,7 @@ class GeometryLandVector : public GeometryBase {
 
     int numLevels_ = 1;
     eckit::LocalConfiguration geomVariables_;
-    bool levelsAreTopDown_;
+    bool levelsAreTopDown_ = false;
 
     // Atlas field containers for coordinates
     atlas::Field elevationField_;
@@ -135,7 +136,7 @@ class GeometryLandVector : public GeometryBase {
     atlas::Field area_;
     atlas::Field vertical_;
 
-    int ownedCount_ = 0;   // nG/npe (+1 for some)
+    size_t ownedCount_ = 0;   // nG/npe (+1 for some)
     int ownedMin_ = 0;
     int ownedMax_ = 0;
   };

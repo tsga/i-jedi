@@ -493,7 +493,7 @@ void IOLandVector::writeVectorFields(const atlas::FieldSet & fields,
   int fileId, fIv, locId, layerId, timId;
   std::map<std::string, int> fieldIvs;
   int nTim = 1;
-  int num_layers = 4;
+  int num_layers; // = 4;
 
   //int num_locations = geom_.globalNodeCount();
 
@@ -517,6 +517,7 @@ void IOLandVector::writeVectorFields(const atlas::FieldSet & fields,
       oops::Log::warning() << "Warnging! no ens member found. Ensure this is a deterministic run " << std::endl;
   }*/
 
+  num_layers = params_.num_layers.value();
   std::string pathFile = params_.datapath.value() + "/" + params_.filename.value();
 
   // Replace member number (ensemble applciaitons)
@@ -626,10 +627,15 @@ void IOLandVector::writeVectorFields(const atlas::FieldSet & fields,
 
         std::vector<int> fieldDims; // = {timId, locId};  // only one layer written out
         // Create field and unpack data into it
-        if (field.rank() == 2) {
-          fieldDims = {timId, layerId, locId};
-        } else if (field.rank() == 1) {
+	if (field.rank() == 1) {
           fieldDims = {timId, locId};
+        } 
+	else if (field.rank() == 2) {
+	  if (field.shape(1) > 1) {
+            fieldDims = {timId, layerId, locId};
+	  } else {
+	    fieldDims = {timId, locId};
+	  }
         } else {
           ABORT("IOLandVector::writeVectorFields - Unsupported field rank: " + std::to_string(field.rank()));
         }
