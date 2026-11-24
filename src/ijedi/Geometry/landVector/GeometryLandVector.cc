@@ -219,6 +219,203 @@ inline uint64_t pack_tile_ij(int tile, int i, int j) {
          static_cast<uint64_t>(j & 0xFFFF);
 }
 
+/*// direction-aware helper and replace your quad loop with sequential edge walkin
+struct Fv3StepState {
+  int t;     // 1-based tile (1..6)
+  int i;     // 0-based i (0..N-1)
+  int j;     // 0-based j (0..N-1)
+  int di;    // current step direction in i (-1, 0, 1)
+  int dj;    // current step direction in j (-1, 0, 1)
+  bool valid;
+};
+
+// Steps 1 cell from (t, i, j) along local direction (di, dj), updating (di, dj)
+// to match the target tile's coordinate frame if a rotated seam is crossed.
+inline Fv3StepState step_fv3_edge(int t, int i, int j, int di, int dj, int N) {
+  int ni = i + di;
+  int nj = j + dj;
+
+  // Interior step (no seam crossed)
+  if (ni >= 0 && ni < N && nj >= 0 && nj < N) {
+    return {t, ni, nj, di, dj, true};
+  }
+
+  // Reject diagonal steps directly; always walk orthogonally (|di| + |dj| == 1)
+  if (std::abs(di) + std::abs(dj) != 1) {
+    return {t, i, j, di, dj, false};
+  }
+
+  // Standard FV3 Gnomonic Cubed-Sphere Panel Connectivity (1-based tiles 1..6)
+  // Odd tiles (1, 3, 5):
+  //   East  (ni == N) -> Even tile (t+1), same orientation: i'=0, j'=j, (di',dj')=(1,0)
+  //   North (nj == N) -> Odd tile (t+2), rotated +90 deg:   i'=N-1-j (Wait: i'=j? See below)
+  // Specifically, for standard FV3 tile layout:
+  //   Tile 1: E->2 (unrot), N->3 (rot), W->5 (rot), S->6 (unrot)
+  //   Tile 2: E->4 (rot),   N->3 (unrot), W->1 (unrot), S->6 (rot)
+  //   (Cyclic shift +2 mod 6 for tiles 3/4 and 5/6)
+  const bool isOdd = (t % 2 == 1);
+  auto wrapTile = [](int raw) { return ((raw - 1 + 6) % 6) + 1; };
+
+  if (isOdd) {
+    if (ni == N) {
+      // East edge of odd tile -> West edge of (t+1), unrotated
+      return {wrapTile(t + 1), 0, j, 1, 0, true};
+    }
+    if (ni < 0) {
+      // West edge of odd tile -> North edge of (t-2), rotated -90 deg
+      // Stepping West (-i) enters from North moving South (-j')
+      return {wrapTile(t - 2), N - 1 - j, N - 1, 0, -1, true};
+    }
+    if (nj == N) {
+      // North edge of odd tile -> West edge of (t+2), rotated +90 deg
+      // Stepping North (+j) enters from West moving East (+i')
+      return {wrapTile(t + 2), 0, N - 1 - i, 1, 0, true};
+    }
+    if (nj < 0) {
+      // South edge of odd tile -> North edge of (t-1), unrotated
+      return {wrapTile(t - 1), i, N - 1, 0, -1, true};
+    }
+  } else {
+    // Even tiles (2, 4, 6)
+    if (ni == N) {
+      // East edge of even tile -> South edge of (t+2), rotated +90 deg
+      // Stepping East (+i) enters from South moving North (+j')
+      return {wrapTile(t + 2), N - 1 - j, 0, 0, 1, true};
+    }
+    if (ni < 0) {
+      // West edge of even tile -> East edge of (t-1), unrotated
+      return {wrapTile(t - 1), N - 1, j, -1, 0, true};
+    }
+    if (nj == N) {
+      // North edge of even tile -> South edge of (t+1), unrotated
+      return {wrapTile(t + 1), i, 0, 0, 1, true};
+    }
+    if (nj < 0) {
+      // South edge of even tile -> East edge of (t-2), rotated -90 deg
+      // Stepping South (-j) enters from East moving West (-i')
+      return {wrapTile(t - 2), N - 1, N - 1 - i, -1, 0, true};
+    }
+  }
+
+  return {t, i, j, di, dj, false};
+}
+
+// Sequentially find SE, NW, and NE so the rotated basis carries over to the NE corner
+// Helper: given SW=(t, i, j), returns {SE, NE, NW, all_valid}
+  auto get_fv3_quad_corners = [&](int t, int i, int j) {
+    struct Corner { int t, i, j; };
+    // 1. Step East from SW -> SE
+    Fv3StepState se = step_fv3_edge(t, i, j, 1, 0, N);
+    // 2. Step North from SW -> NW
+    Fv3StepState nw = step_fv3_edge(t, i, j, 0, 1, N);
+
+    if (!se.valid || !nw.valid) {
+      return std::make_tuple(Corner{}, Corner{}, Corner{}, false);
+    }
+
+    // 3. Step "North" relative to SW's frame starting from SE -> NE
+    // Note: if SE crossed an East seam onto an even tile, its frame is unrotated,
+    // so "North" is still (0, 1). If SE crossed onto a rotated tile, rotate (0, 1) accordingly:
+    int north_di = -se.dj;  // Left-hand perpendicular to East vector (se.di, se.dj)
+    int north_dj =  se.di;
+    Fv3StepState ne_from_se = step_fv3_edge(se.t, se.i, se.j, north_di, north_dj, N);
+
+    // 4. Verify consistency from NW stepping "East" (right-hand perpendicular to North vector)
+    int east_di =  nw.dj;
+    int east_dj = -nw.di;
+    Fv3StepState ne_from_nw = step_fv3_edge(nw.t, nw.i, nw.j, east_di, east_dj, N);
+
+    // At the 8 cubed-sphere corners, ne_from_se and ne_from_nw land on different tiles
+    // (3-valence triangle singularity). Skip quad here (or emit a 3-node triangle).
+    if (!ne_from_se.valid || !ne_from_nw.valid ||
+        ne_from_se.t != ne_from_nw.t ||
+        ne_from_se.i != ne_from_nw.i ||
+        ne_from_se.j != ne_from_nw.j) {
+      return std::make_tuple(Corner{}, Corner{}, Corner{}, false);
+    }
+
+    return std::make_tuple(
+        Corner{se.t, se.i, se.j},
+        Corner{ne_from_se.t, ne_from_se.i, ne_from_se.j},
+        Corner{nw.t, nw.i, nw.j},
+        true);
+  };
+*/
+
+struct Fv3Corner {
+  int t;
+  int i;
+  int j;
+};
+
+struct Fv3StepState {
+  int t;
+  int i;
+  int j;
+  int di;
+  int dj;
+  bool valid;
+};
+
+// Steps 1 cell from (t, i, j) along local direction (di, dj), rotating (di, dj)
+// if a rotated FV3 cubed-sphere seam is crossed (1-based tiles 1..6).
+inline Fv3StepState step_fv3_edge(int t, int i, int j, int di, int dj, int N) {
+  int ni = i + di;
+  int nj = j + dj;
+
+  if (ni >= 0 && ni < N && nj >= 0 && nj < N) {
+    return {t, ni, nj, di, dj, true};
+  }
+  if (std::abs(di) + std::abs(dj) != 1) {
+    return {t, i, j, di, dj, false};
+  }
+
+  const bool isOdd = (t % 2 == 1);
+  auto wrapTile = [](int raw) { return ((raw - 1 + 6) % 6) + 1; };
+
+  if (isOdd) {
+    if (ni == N) return {wrapTile(t + 1), 0, j, 1, 0, true};
+    if (ni < 0)  return {wrapTile(t - 2), N - 1 - j, N - 1, 0, -1, true};
+    if (nj == N) return {wrapTile(t + 2), 0, N - 1 - i, 1, 0, true};
+    if (nj < 0)  return {wrapTile(t - 1), i, N - 1, 0, -1, true};
+  } else {
+    if (ni == N) return {wrapTile(t + 2), N - 1 - j, 0, 0, 1, true};
+    if (ni < 0)  return {wrapTile(t - 1), N - 1, j, -1, 0, true};
+    if (nj == N) return {wrapTile(t + 1), i, 0, 0, 1, true};
+    if (nj < 0)  return {wrapTile(t - 2), N - 1, N - 1 - i, -1, 0, true};
+  }
+  return {t, i, j, di, dj, false};
+}
+
+// Given SW=(t, i, j), walks edges sequentially to find {SE, NE, NW} in rotated panel frames.
+inline std::tuple<Fv3Corner, Fv3Corner, Fv3Corner, bool>
+get_fv3_quad_corners(int t, int i, int j, int N) {
+  Fv3StepState se = step_fv3_edge(t, i, j, 1, 0, N);
+  Fv3StepState nw = step_fv3_edge(t, i, j, 0, 1, N);
+  if (!se.valid || !nw.valid) {
+    return {{}, {}, {}, false};
+  }
+
+  // Step "North" relative to SW's frame starting from SE -> NE
+  Fv3StepState ne_from_se = step_fv3_edge(se.t, se.i, se.j, -se.dj, se.di, N);
+  // Step "East" relative to SW's frame starting from NW -> NE
+  Fv3StepState ne_from_nw = step_fv3_edge(nw.t, nw.i, nw.j, nw.dj, -nw.di, N);
+
+  // Reject the 8 cubed-sphere corner singularities where 3 tiles meet (triangle, not quad)
+  if (!ne_from_se.valid || !ne_from_nw.valid ||
+      ne_from_se.t != ne_from_nw.t ||
+      ne_from_se.i != ne_from_nw.i ||
+      ne_from_se.j != ne_from_nw.j) {
+    return {{}, {}, {}, false};
+  }
+
+  return {
+      Fv3Corner{se.t, se.i, se.j},
+      Fv3Corner{ne_from_se.t, ne_from_se.i, ne_from_se.j},
+      Fv3Corner{nw.t, nw.i, nw.j},
+      true};
+}
+
 // -----------------------------------------------------------------------------
 // Helper: Resolve (tile, i, j) cross-panel seam boundary transformations
 // Uses 1-based indexing for tile (1..6) and coordinate indices (1..N).
@@ -287,6 +484,73 @@ inline std::tuple<int, int, int, bool> resolve_fv3_seam_neighbor(
   return {-1, -1, -1, false};
 }
 
+// get_fv3_quad_corners using existing resolve_fv3_seam_neighbor:
+inline std::tuple<Fv3Corner, Fv3Corner, Fv3Corner, bool>
+get_fv3_quad_corners_from_existing(int t, int i, int j, int N) {
+  // 1. Step East (+1, 0) and North (0, +1) using your existing proven seam resolver
+  auto [t_SE, i_SE, j_SE, v_SE] = resolve_fv3_seam_neighbor(t, i + 1, j, N);
+  auto [t_NW, i_NW, j_NW, v_NW] = resolve_fv3_seam_neighbor(t, i, j + 1, N);
+
+  if (!v_SE || !v_NW) {
+    return {{}, {}, {}, false};
+  }
+
+  // Case 1: Interior quad (both SE and NW are on the same tile t) -> NE is simply (t, i+1, j+1)
+  if (t_SE == t && t_NW == t) {
+    return {Fv3Corner{t, i_SE, j_SE},
+            Fv3Corner{t, i + 1, j + 1},
+            Fv3Corner{t, i_NW, j_NW},
+            true};
+  }
+
+  // Case 2: Crossed an East seam (t_SE != t, t_NW == t)
+  // Step along the shared seam edge on t_SE: find which neighbor of (t_SE, i_SE, j_SE)
+  // is adjacent to (t_NW, i_NW, j_NW) by checking the 4 orthogonal neighbors of SE on t_SE.
+  const int dI[4] = {1, -1, 0, 0};
+  const int dJ[4] = {0, 0, 1, -1};
+
+  if (t_SE != t && t_NW == t) {
+    for (int d = 0; d < 4; ++d) {
+      int cand_i = i_SE + dI[d];
+      int cand_j = j_SE + dJ[d];
+      if (cand_i < 0 || cand_i >= N || cand_j < 0 || cand_j >= N) continue;
+
+      // Check if this candidate on t_SE borders NW across the seam
+      for (int d2 = 0; d2 < 4; ++d2) {
+        auto [bt, bi, bj, bv] = resolve_fv3_seam_neighbor(t_SE, cand_i + dI[d2], cand_j + dJ[d2], N);
+        if (bv && bt == t_NW && bi == i_NW && bj == j_NW) {
+          return {Fv3Corner{t_SE, i_SE, j_SE},
+                  Fv3Corner{t_SE, cand_i, cand_j},
+                  Fv3Corner{t_NW, i_NW, j_NW},
+                  true};
+        }
+      }
+    }
+  }
+
+  // Case 3: Crossed a North seam (t_NW != t, t_SE == t)
+  // Find which orthogonal neighbor of (t_NW, i_NW, j_NW) on t_NW borders (t_SE, i_SE, j_SE)
+  if (t_NW != t && t_SE == t) {
+    for (int d = 0; d < 4; ++d) {
+      int cand_i = i_NW + dI[d];
+      int cand_j = j_NW + dJ[d];
+      if (cand_i < 0 || cand_i >= N || cand_j < 0 || cand_j >= N) continue;
+
+      for (int d2 = 0; d2 < 4; ++d2) {
+        auto [bt, bi, bj, bv] = resolve_fv3_seam_neighbor(t_NW, cand_i + dI[d2], cand_j + dJ[d2], N);
+        if (bv && bt == t_SE && bi == i_SE && bj == j_SE) {
+          return {Fv3Corner{t_SE, i_SE, j_SE},
+                  Fv3Corner{t_NW, cand_i, cand_j},
+                  Fv3Corner{t_NW, i_NW, j_NW},
+                  true};
+        }
+      }
+    }
+  }
+
+  return {{}, {}, {}, false};
+}
+
 // -----------------------------------------------------------------------------
 // Helper: Construct pure quads across panels using FV3 seam neighbor resolution
 // -----------------------------------------------------------------------------
@@ -340,7 +604,7 @@ void compute_quad_nodes(
   // 2. Identify full quads where this rank owns the SW corner node.
   // Standard counter-clockwise orientation:
   // SW: (t, i, j), SE: (t, i+1, j), NE: (t, i+1, j+1), NW: (t, i, j+1)
-  for (size_t n = 0; n < ownedCount_; ++n) {
+/*  for (size_t n = 0; n < ownedCount_; ++n) {
     int t = rank_tiles[n];
     int i = rank_i[n];
     int j = rank_j[n];
@@ -377,6 +641,40 @@ void compute_quad_nodes(
     quadNodes.push_back({id_SW, id_SE, id_NE, id_NW});    
 
   }
+*/
+  for (size_t n = 0; n < ownedCount_; ++n) {
+    int t = rank_tiles[n];
+    int i = rank_i[n];
+    int j = rank_j[n];
+
+    atlas::gidx_t id_SW = globalIdx[n];
+
+    auto [c_SE, c_NE, c_NW, valid] = get_fv3_quad_corners(t, i, j, N);
+    if (!valid) continue;
+
+    auto it_SE = nodeLookup.find(pack_tile_ij(c_SE.t, c_SE.i, c_SE.j));
+    if (it_SE == nodeLookup.end()) continue;
+
+    auto it_NE = nodeLookup.find(pack_tile_ij(c_NE.t, c_NE.i, c_NE.j));
+    if (it_NE == nodeLookup.end()) continue;
+
+    auto it_NW = nodeLookup.find(pack_tile_ij(c_NW.t, c_NW.i, c_NW.j));
+    if (it_NW == nodeLookup.end()) continue;
+
+    atlas::gidx_t id_SE = it_SE->second;
+    atlas::gidx_t id_NE = it_NE->second;
+    atlas::gidx_t id_NW = it_NW->second;
+
+    if (!isValidEdge(id_SW, id_SE) ||
+        !isValidEdge(id_SE, id_NE) ||
+        !isValidEdge(id_NE, id_NW) ||
+        !isValidEdge(id_NW, id_SW)) {
+      continue;
+    }
+
+    quadNodes.push_back({id_SW, id_SE, id_NE, id_NW});
+  }
+
 
   // 3. Compute non-overlapping global cell indices across all MPI partitions
   const int nQ = static_cast<int>(quadNodes.size());
@@ -393,6 +691,104 @@ void compute_quad_nodes(
     quadGidx[q] = static_cast<atlas::gidx_t>(quadOffset + q + 1);
   }
 }
+
+void compute_quad_nodes_existing(
+    size_t ownedCount_,
+    int N,
+    const std::vector<double> lons,
+    const std::vector<double> lats,
+    const std::vector<int>& rank_tiles,
+    const std::vector<int>& rank_i,
+    const std::vector<int>& rank_j,
+    const std::vector<atlas::gidx_t>& globalIdx,
+    std::vector<std::array<atlas::gidx_t, 4>>& quadNodes,
+    std::vector<atlas::gidx_t>& quadGidx,
+    const eckit::mpi::Comm& comm)
+{
+  quadNodes.clear();
+  quadGidx.clear();
+
+  // Great-circle distance check on the unit sphere (avoids polar convergence and 0/360 wrap issues)
+  // For a ~0.25 deg (C384) to ~1.0 deg (C96) cubed-sphere grid, 3.0 degrees (~333 km) safely
+  // allows stretched cubed-sphere corners while rejecting trans-oceanic jumps.
+  const double maxEdgeDeg = 3.0;
+  const double maxChordSq = std::pow(2.0 * std::sin((maxEdgeDeg * M_PI / 180.0) / 2.0), 2);
+
+  auto isValidEdge = [&](atlas::gidx_t gidxA, atlas::gidx_t gidxB) -> bool {
+    // Convert 1-based globalIdx to 0-based C++ vector index
+    const size_t idxA = static_cast<size_t>(gidxA - 1);
+    const size_t idxB = static_cast<size_t>(gidxB - 1);
+
+    const double rlonA = lons[idxA] * M_PI / 180.0;
+    const double rlatA = lats[idxA] * M_PI / 180.0;
+    const double rlonB = lons[idxB] * M_PI / 180.0;
+    const double rlatB = lats[idxB] * M_PI / 180.0;
+
+    const double dx = std::cos(rlatA) * std::cos(rlonA) - std::cos(rlatB) * std::cos(rlonB);
+    const double dy = std::cos(rlatA) * std::sin(rlonA) - std::cos(rlatB) * std::sin(rlonB);
+    const double dz = std::sin(rlatA) - std::sin(rlatB);
+
+    return (dx * dx + dy * dy + dz * dz) <= maxChordSq;
+  };
+
+  // 1. Build local node table: (tile, i, j) -> 1-based globalIdx
+  std::unordered_map<uint64_t, atlas::gidx_t> nodeLookup;
+  nodeLookup.reserve(globalIdx.size());
+
+  for (size_t k = 0; k < globalIdx.size(); ++k) {
+    nodeLookup[pack_tile_ij(rank_tiles[k], rank_i[k], rank_j[k])] = globalIdx[k];
+  }    
+  for (size_t n = 0; n < ownedCount_; ++n) {
+    int t = rank_tiles[n];
+    int i = rank_i[n];
+    int j = rank_j[n];
+
+    atlas::gidx_t id_SW = globalIdx[n];
+
+    //auto [c_SE, c_NE, c_NW, valid] = get_fv3_quad_corners(t, i, j, N);
+    auto [c_SE, c_NE, c_NW, valid] = get_fv3_quad_corners_from_existing(t, i, j, N);
+    if (!valid) continue;
+
+    auto it_SE = nodeLookup.find(pack_tile_ij(c_SE.t, c_SE.i, c_SE.j));
+    if (it_SE == nodeLookup.end()) continue;
+
+    auto it_NE = nodeLookup.find(pack_tile_ij(c_NE.t, c_NE.i, c_NE.j));
+    if (it_NE == nodeLookup.end()) continue;
+
+    auto it_NW = nodeLookup.find(pack_tile_ij(c_NW.t, c_NW.i, c_NW.j));
+    if (it_NW == nodeLookup.end()) continue;
+
+    atlas::gidx_t id_SE = it_SE->second;
+    atlas::gidx_t id_NE = it_NE->second;
+    atlas::gidx_t id_NW = it_NW->second;
+
+    if (!isValidEdge(id_SW, id_SE) ||
+        !isValidEdge(id_SE, id_NE) ||
+        !isValidEdge(id_NE, id_NW) ||
+        !isValidEdge(id_NW, id_SW)) {
+      continue;
+    }
+
+    quadNodes.push_back({id_SW, id_SE, id_NE, id_NW});
+  }
+
+  // Compute globally unique 1-based quad indices across all MPI ranks
+  const int localQuads = static_cast<int>(quadNodes.size());
+  std::vector<int> quadsPerRank(comm.size(), 0);
+  comm.allGather(localQuads, quadsPerRank.begin(), quadsPerRank.end());
+
+  atlas::gidx_t quadOffset = 0;
+  for (int r = 0; r < comm.rank(); ++r) {
+    quadOffset += quadsPerRank[r];
+  }
+  quadGidx.resize(localQuads);
+  for (int q = 0; q < localQuads; ++q) {
+    quadGidx[q] = quadOffset + q + 1;
+  }
+
+}
+ 
+//============================================================================================
 
 
 // Initialize static member variables
@@ -656,14 +1052,128 @@ GeometryLandVector::SharedData::SharedData(const eckit::Configuration &config,
 
   const int N = config.getInt("resolution", 384);
 
-  // 4. Build global spatial index to discover owners of missing boundary vertices
+// 4. Build global spatial index to discover owners of missing boundary vertices
   std::unordered_map<uint64_t, size_t> globalCoordToIdx;
   globalCoordToIdx.reserve(num_points);
   for (size_t g = 0; g < num_points; ++g) {
     globalCoordToIdx[pack_tile_ij(global_tile[g], global_i[g], global_j[g])] = g;
   }
 
+  // 4b. Precompute perimeter cells (i=0, i=N-1, j=0, j=N-1) and geometric seam lookup
+  //     (Used by both Step 5 for MPI ghost requests and Step 9 for quad generation)
+  
+  // Great-circle distance check on the unit sphere (avoids polar convergence and 0/360 wrap issues)
+  // For a ~0.25 deg (C384) to ~1.0 deg (C96) cubed-sphere grid, 3.0 degrees (~333 km) safely
+  // allows stretched cubed-sphere corners while rejecting trans-oceanic jumps.
+  const double maxEdgeDeg = 3.0;
+  const double maxChordSq = std::pow(2.0 * std::sin((maxEdgeDeg * M_PI / 180.0) / 2.0), 2);
+
+  struct BoundaryCell {
+    int t, i, j;
+    double x, y, z;
+  };
+  std::vector<BoundaryCell> boundaryCells;
+  for (size_t g = 0; g < num_points; ++g) {
+    int bt = global_tile[g];
+    int bi = global_i[g];
+    int bj = global_j[g];
+    if (bi == 0 || bi == N - 1 || bj == 0 || bj == N - 1) {
+      double rlon = lons[g] * M_PI / 180.0;
+      double rlat = lats[g] * M_PI / 180.0;
+      boundaryCells.push_back({
+          bt, bi, bj,
+          std::cos(rlat) * std::cos(rlon),
+          std::cos(rlat) * std::sin(rlon),
+          std::sin(rlat)});
+    }
+  }
+
+  auto find_nearest_foreign_cell = [&](int t, int i, int j) -> std::pair<Fv3Corner, bool> {
+    auto it = globalCoordToIdx.find(pack_tile_ij(t, i, j));
+    if (it == globalCoordToIdx.end()) return {{}, false};
+    size_t g = it->second;
+    double rlon = lons[g] * M_PI / 180.0;
+    double rlat = lats[g] * M_PI / 180.0;
+    double x0 = std::cos(rlat) * std::cos(rlon);
+    double y0 = std::cos(rlat) * std::sin(rlon);
+    double z0 = std::sin(rlat);
+
+    double bestD2 = maxChordSq;
+    Fv3Corner bestCorner{};
+    bool found = false;
+
+    for (const auto& bc : boundaryCells) {
+      if (bc.t == t) continue;
+      double dx = x0 - bc.x;
+      double dy = y0 - bc.y;
+      double dz = z0 - bc.z;
+      double d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        bestCorner = {bc.t, bc.i, bc.j};
+        found = true;
+      }
+    }
+    return {bestCorner, found};
+  };
+
+  auto get_fv3_quad_corners_geometric = [&](int t, int i, int j)
+      -> std::tuple<Fv3Corner, Fv3Corner, Fv3Corner, bool> {
+    if (i + 1 < N && j + 1 < N) {
+      return {Fv3Corner{t, i + 1, j},
+              Fv3Corner{t, i + 1, j + 1},
+              Fv3Corner{t, i, j + 1},
+              true};
+    }
+    if (i == N - 1 && j + 1 < N) {
+      auto [c_SE, ok_SE] = find_nearest_foreign_cell(t, i, j);
+      auto [c_NE, ok_NE] = find_nearest_foreign_cell(t, i, j + 1);
+      if (!ok_SE || !ok_NE) return {{}, {}, {}, false};
+      return {c_SE, c_NE, Fv3Corner{t, i, j + 1}, true};
+    }
+    if (j == N - 1 && i + 1 < N) {
+      auto [c_NW, ok_NW] = find_nearest_foreign_cell(t, i, j);
+      auto [c_NE, ok_NE] = find_nearest_foreign_cell(t, i + 1, j);
+      if (!ok_NW || !ok_NE) return {{}, {}, {}, false};
+      return {Fv3Corner{t, i + 1, j}, c_NE, c_NW, true};
+    }
+    return {{}, {}, {}, false};
+  };
+
   // 5. Determine neighbor nodes required to close boundary quads across FV3 seams
+  std::vector<std::vector<atlas::gidx_t>> requests(nproc);
+
+  for (size_t n = 0; n < ownedCount_; ++n) {
+    int t = rank_tiles[n];
+    int i = rank_i[n];
+    int j = rank_j[n];
+
+    auto [c_SE, c_NE, c_NW, valid] = get_fv3_quad_corners_geometric(t, i, j);
+    if (!valid) continue;
+
+    const std::array<Fv3Corner, 3> corners = {c_SE, c_NE, c_NW};
+    for (const auto& c : corners) {
+      uint64_t key = pack_tile_ij(c.t, c.i, c.j);
+      auto it = globalCoordToIdx.find(key);
+      if (it != globalCoordToIdx.end()) {
+        size_t neighbor_g_idx = it->second;
+        int owner = rank_owning[neighbor_g_idx];
+
+        if (owner != my_rank) {
+          atlas::gidx_t req_gid = static_cast<atlas::gidx_t>(neighbor_g_idx + 1);
+          requests[owner].push_back(req_gid);
+        }
+      }
+    }
+  }
+
+  // Deduplicate request lists per destination rank
+  for (int r = 0; r < nproc; ++r) {
+    std::sort(requests[r].begin(), requests[r].end());
+    requests[r].erase(std::unique(requests[r].begin(), requests[r].end()), requests[r].end());
+  }
+
+/*  // 5. Determine neighbor nodes required to close boundary quads across FV3 seams
   std::vector<std::vector<atlas::gidx_t>> requests(nproc);
   const std::array<std::pair<int, int>, 3> offsets = {{{1, 0}, {1, 1}, {0, 1}}};
 
@@ -675,7 +1185,6 @@ GeometryLandVector::SharedData::SharedData(const eckit::Configuration &config,
     for (const auto& off : offsets) {
       auto [target_t, target_i, target_j, valid] =
           resolve_fv3_seam_neighbor(t, i + off.first, j + off.second, N);
-
       if (!valid) continue;
 
       uint64_t key = pack_tile_ij(target_t, target_i, target_j);
@@ -697,6 +1206,41 @@ GeometryLandVector::SharedData::SharedData(const eckit::Configuration &config,
     std::sort(requests[r].begin(), requests[r].end());
     requests[r].erase(std::unique(requests[r].begin(), requests[r].end()), requests[r].end());
   }
+
+// 5. Determine neighbor nodes required to close boundary quads across FV3 seams
+  std::vector<std::vector<atlas::gidx_t>> requests(nproc);
+
+  for (size_t n = 0; n < ownedCount_; ++n) {
+    int t = rank_tiles[n];
+    int i = rank_i[n];
+    int j = rank_j[n];
+
+    //auto [c_SE, c_NE, c_NW, valid] = get_fv3_quad_corners(t, i, j, N);
+    auto [c_SE, c_NE, c_NW, valid] = get_fv3_quad_corners_from_existing(t, i, j, N);
+    if (!valid) continue;
+
+    const std::array<Fv3Corner, 3> corners = {c_SE, c_NE, c_NW};
+    for (const auto& c : corners) {
+      uint64_t key = pack_tile_ij(c.t, c.i, c.j);
+      auto it = globalCoordToIdx.find(key);
+      if (it != globalCoordToIdx.end()) {
+        size_t neighbor_g_idx = it->second;
+        int owner = rank_owning[neighbor_g_idx];
+
+        if (owner != my_rank) {
+          atlas::gidx_t req_gid = static_cast<atlas::gidx_t>(neighbor_g_idx + 1);
+          requests[owner].push_back(req_gid);
+        }
+      }
+    }
+  }
+
+  // Deduplicate request lists per destination rank
+  for (int r = 0; r < nproc; ++r) {
+    std::sort(requests[r].begin(), requests[r].end());
+    requests[r].erase(std::unique(requests[r].begin(), requests[r].end()), requests[r].end());
+  }
+*/
 
   // 6. Non-blocking MPI halo exchange (Phase 1: Exchange node ID requests)
   std::vector<int> send_req_counts(nproc, 0);
@@ -797,11 +1341,85 @@ GeometryLandVector::SharedData::SharedData(const eckit::Configuration &config,
     }
   }
 
-  // 9. Build pure quads across local and halo nodes using seam transformations
+// 9. Build pure quads across local and halo nodes using rotated seam transformations
+  //    and great-circle edge length filtering
   std::vector<std::array<atlas::gidx_t, 4>> quadNodes;
   std::vector<atlas::gidx_t> quadGidx;
 
-  compute_quad_nodes(
+  auto isValidEdge = [&](atlas::gidx_t gidxA, atlas::gidx_t gidxB) -> bool {
+    // Convert 1-based globalIdx to 0-based C++ vector index
+    const size_t idxA = static_cast<size_t>(gidxA - 1);
+    const size_t idxB = static_cast<size_t>(gidxB - 1);
+
+    const double rlonA = lons[idxA] * M_PI / 180.0;
+    const double rlatA = lats[idxA] * M_PI / 180.0;
+    const double rlonB = lons[idxB] * M_PI / 180.0;
+    const double rlatB = lats[idxB] * M_PI / 180.0;
+
+    const double dx = std::cos(rlatA) * std::cos(rlonA) - std::cos(rlatB) * std::cos(rlonB);
+    const double dy = std::cos(rlatA) * std::sin(rlonA) - std::cos(rlatB) * std::sin(rlonB);
+    const double dz = std::sin(rlatA) - std::sin(rlatB);
+
+    return (dx * dx + dy * dy + dz * dz) <= maxChordSq;
+  };
+
+  // 1. Build local node table: (tile, i, j) -> 1-based globalIdx
+  std::unordered_map<uint64_t, atlas::gidx_t> nodeLookup;
+  nodeLookup.reserve(globalIdx.size());
+
+  for (size_t k = 0; k < globalIdx.size(); ++k) {
+    nodeLookup[pack_tile_ij(rank_tiles[k], rank_i[k], rank_j[k])] = globalIdx[k];
+  }
+  for (size_t n = 0; n < ownedCount_; ++n) {
+    int t = rank_tiles[n];
+    int i = rank_i[n];
+    int j = rank_j[n];
+
+    atlas::gidx_t id_SW = globalIdx[n];
+
+    //auto [c_SE, c_NE, c_NW, valid] = get_fv3_quad_corners(t, i, j, N);
+    auto [c_SE, c_NE, c_NW, valid] = get_fv3_quad_corners_geometric(t, i, j);
+    //get_fv3_quad_corners_from_existing(t, i, j, N);
+    if (!valid) continue;
+
+    auto it_SE = nodeLookup.find(pack_tile_ij(c_SE.t, c_SE.i, c_SE.j));
+    if (it_SE == nodeLookup.end()) continue;
+
+    auto it_NE = nodeLookup.find(pack_tile_ij(c_NE.t, c_NE.i, c_NE.j));
+    if (it_NE == nodeLookup.end()) continue;
+
+    auto it_NW = nodeLookup.find(pack_tile_ij(c_NW.t, c_NW.i, c_NW.j));
+    if (it_NW == nodeLookup.end()) continue;
+
+    atlas::gidx_t id_SE = it_SE->second;
+    atlas::gidx_t id_NE = it_NE->second;
+    atlas::gidx_t id_NW = it_NW->second;
+
+   if (!isValidEdge(id_SW, id_SE) ||
+        !isValidEdge(id_SE, id_NE) ||
+        !isValidEdge(id_NE, id_NW) ||
+        !isValidEdge(id_NW, id_SW)) {
+      continue;
+    }
+
+    quadNodes.push_back({id_SW, id_SE, id_NE, id_NW});
+  }
+
+  // Compute globally unique 1-based quad indices across all MPI ranks
+  const int localQuads = static_cast<int>(quadNodes.size());
+  std::vector<int> quadsPerRank(nproc, 0);
+  comm_.allGather(localQuads, quadsPerRank.begin(), quadsPerRank.end());
+
+  atlas::gidx_t quadOffset = 0;
+  for (int r = 0; r < my_rank; ++r) {
+    quadOffset += quadsPerRank[r];
+  }
+  quadGidx.resize(localQuads);
+  for (int q = 0; q < localQuads; ++q) {
+    quadGidx[q] = quadOffset + q + 1;
+  }  
+
+/*  compute_quad_nodes_existing(
       ownedCount_,
       N,
       lons, lats,
@@ -809,6 +1427,7 @@ GeometryLandVector::SharedData::SharedData(const eckit::Configuration &config,
       globalIdx,
       quadNodes, quadGidx,
       comm_);
+*/
 
   // 1. Verify owned node count matches the expected input exactly across all ranks
   size_t local_owned = 0;
