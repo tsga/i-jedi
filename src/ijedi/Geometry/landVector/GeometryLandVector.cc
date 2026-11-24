@@ -1051,6 +1051,8 @@ GeometryLandVector::SharedData::SharedData(const eckit::Configuration &config,
   comm.allReduceInPlace(N, eckit::mpi::Operation::MAX);*/
 
   const int N = config.getInt("resolution", 384);
+  const int idxMin = 1; // *std::min_element(global_i.begin(), global_i.end());
+  const int idxMax = N; //(idxMin == 1) ? N : (N - 1);
 
 // 4. Build global spatial index to discover owners of missing boundary vertices
   std::unordered_map<uint64_t, size_t> globalCoordToIdx;
@@ -1077,7 +1079,7 @@ GeometryLandVector::SharedData::SharedData(const eckit::Configuration &config,
     int bt = global_tile[g];
     int bi = global_i[g];
     int bj = global_j[g];
-    if (bi == 0 || bi == N - 1 || bj == 0 || bj == N - 1) {
+    if (bi == idxMin || bi == idxMax || bj == idxMin || bj == idxMax ) {
       double rlon = lons[g] * M_PI / 180.0;
       double rlat = lats[g] * M_PI / 180.0;
       boundaryCells.push_back({
@@ -1117,28 +1119,32 @@ GeometryLandVector::SharedData::SharedData(const eckit::Configuration &config,
     return {bestCorner, found};
   };
 
-  auto get_fv3_quad_corners_geometric = [&](int t, int i, int j)
+auto get_fv3_quad_corners_geometric = [&](int t, int i, int j)
       -> std::tuple<Fv3Corner, Fv3Corner, Fv3Corner, bool> {
-    if (i + 1 < N && j + 1 < N) {
+    // Interior cell (both i+1 and j+1 are <= idxMax)
+    if (i < idxMax && j < idxMax) {
       return {Fv3Corner{t, i + 1, j},
               Fv3Corner{t, i + 1, j + 1},
               Fv3Corner{t, i, j + 1},
               true};
     }
-    if (i == N - 1 && j + 1 < N) {
+    // East tile seam (i == idxMax, j < idxMax)
+    if (i == idxMax && j < idxMax) {
       auto [c_SE, ok_SE] = find_nearest_foreign_cell(t, i, j);
       auto [c_NE, ok_NE] = find_nearest_foreign_cell(t, i, j + 1);
       if (!ok_SE || !ok_NE) return {{}, {}, {}, false};
       return {c_SE, c_NE, Fv3Corner{t, i, j + 1}, true};
     }
-    if (j == N - 1 && i + 1 < N) {
+    // North tile seam (j == idxMax, i < idxMax)
+    if (j == idxMax && i < idxMax) {
       auto [c_NW, ok_NW] = find_nearest_foreign_cell(t, i, j);
       auto [c_NE, ok_NE] = find_nearest_foreign_cell(t, i + 1, j);
       if (!ok_NW || !ok_NE) return {{}, {}, {}, false};
       return {Fv3Corner{t, i + 1, j}, c_NE, c_NW, true};
     }
+    // Exact tile corner (i == idxMax && j == idxMax): 3-tile triangle singularity
     return {{}, {}, {}, false};
-  };
+  };  
 
   // 5. Determine neighbor nodes required to close boundary quads across FV3 seams
   std::vector<std::vector<atlas::gidx_t>> requests(nproc);
@@ -1693,7 +1699,7 @@ GeometryLandVector::SharedData::SharedData(const eckit::Configuration &config,
     std::string gFile = config.getString("save_grid_gmsh_to");
     const atlas::functionspace::NodeColumns fsNC(functionSpace_);
     eckit::LocalConfiguration gmshConf;
-    gmshConf.set("coordinates", "lonlat");
+    gmshConf.set("coordinates", "xyz");
     gmshConf.set("ghost", true);
     atlas::output::Gmsh gmsh(gFile, gmshConf);
     gmsh.write(mesh_); //fsNC.mesh());
