@@ -38,8 +38,9 @@ namespace ijedi
     geometryImpl_ = GeometryBase::create(geomConf, comm, modelData_, functionspace_,
                                          fields_, levelsAreTopDown_, numberLevels_);
 
-    // Construct the fields metadata object using numLevels from the base class
-    fieldsMeta_ = std::make_shared<FieldsMetadata>(numberLevels_);
+    // Construct the fields metadata object using numLevels and the model data (e.g. the sea-ice
+    // dimensions) from the geometry implementation
+    fieldsMeta_ = std::make_shared<FieldsMetadata>(numberLevels_, modelData_);
 
     // Set up levels information for each variable using the fields metadata
     levelsPerVariable_ = fieldsMeta_->levelsPerVariable();

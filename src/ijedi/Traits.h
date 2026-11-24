@@ -50,6 +50,8 @@ namespace ijedi
     //typedef ijedi::LocalInterpolatorLandVector LocalInterpolator;
     //typedef oops::AtlasInterpolator          LocalInterpolator;
     typedef ufo::ObsLocalization<mist::GeometryIterator> ObsLocalization;
+
+    static void registerNorms() {}
   };
 
   struct TraitsAtm
@@ -77,6 +79,8 @@ namespace ijedi
     //typedef ijedi::LocalInterpolatorLandVector LocalInterpolator;
     //typedef oops::AtlasInterpolator          LocalInterpolator;
     typedef ufo::ObsLocalization<mist::GeometryIterator> ObsLocalization;
+
+    static void registerNorms() {}
   };
 
   struct TraitsOcn
@@ -101,6 +105,8 @@ namespace ijedi
     //typedef ijedi::LocalInterpolatorLandVector LocalInterpolator;
     //typedef oops::AtlasInterpolator          LocalInterpolator;
     typedef ufo::ObsLocalization<mist::GeometryIterator> ObsLocalization;
+
+    static void registerNorms() {}
   };
 
 }  // namespace ijedi

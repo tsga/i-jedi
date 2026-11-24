@@ -110,11 +110,10 @@ variational:
     test: on
 
 output:
-  io:
-    filetype: unstructured
-    filepath: mom6-3dvar-an-unstructured
-
-final j evaluation: false
+  analysis:
+    io:
+      filetype: unstructured
+      filepath: mom6-3dvar-an-unstructured
 
 test:
   reference filename: testref/3dvar-mom6.test

@@ -406,6 +406,14 @@ namespace ijedi
     md.vtype = "magnitude";
     addFieldMetadata(fieldsmetadata, nlev, md);
 
+    md.longName = "distance_from_coast";
+    md.units = "m";
+    md.kind = "double";
+    md.tracer = "false";
+    md.levels = "1";
+    md.vtype = "magnitude";
+    addFieldMetadata(fieldsmetadata, nlev, md);
+
     md.longName = "dry_air_density";
     md.units = "kgm-3";
     md.kind = "double";
@@ -1295,6 +1303,14 @@ namespace ijedi
     md.vtype = "magnitude";
     addFieldMetadata(fieldsmetadata, nlev, md);
 
+    md.longName = "mesoscale_representation_error";
+    md.units = "none";
+    md.kind = "double";
+    md.tracer = "false";
+    md.levels = "1";
+    md.vtype = "magnitude";
+    addFieldMetadata(fieldsmetadata, nlev, md);
+
     md.longName = "moist_air_density";
     md.units = "kgm-3";
     md.kind = "double";
@@ -1323,7 +1339,7 @@ namespace ijedi
     md.units = "meters";
     md.kind = "double";
     md.tracer = "true";
-    md.levels = "full";
+    md.levels = "1";
     md.vtype = "magnitude";
     addFieldMetadata(fieldsmetadata, nlev, md);
 
@@ -1488,11 +1504,35 @@ namespace ijedi
     md.vtype = "magnitude";
     addFieldMetadata(fieldsmetadata, nlev, md);
 
+    md.longName = "rossby_radius";
+    md.units = "m";
+    md.kind = "double";
+    md.tracer = "false";
+    md.levels = "1";
+    md.vtype = "magnitude";
+    addFieldMetadata(fieldsmetadata, nlev, md);
+
     md.longName = "saturation_water_vapor_mixing_ratio_wrt_moist_air";
     md.units = "kgkg-1";
     md.kind = "double";
     md.tracer = "true";
     md.levels = "full";
+    md.vtype = "magnitude";
+    addFieldMetadata(fieldsmetadata, nlev, md);
+
+    md.longName = "sea_area_fraction";
+    md.units = "none";
+    md.kind = "double";
+    md.tracer = "false";
+    md.levels = "1";
+    md.vtype = "magnitude";
+    addFieldMetadata(fieldsmetadata, nlev, md);
+
+    md.longName = "sea_floor_depth_below_sea_surface";
+    md.units = "m";
+    md.kind = "double";
+    md.tracer = "false";
+    md.levels = "1";
     md.vtype = "magnitude";
     addFieldMetadata(fieldsmetadata, nlev, md);
 

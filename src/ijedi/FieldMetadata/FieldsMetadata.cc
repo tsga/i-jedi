@@ -5,6 +5,7 @@
 #include "eckit/exception/Exceptions.h"
 #include "ijedi/FieldMetadata/FieldsMetadata.h"
 #include "ijedi/FieldMetadata/FieldsMetadataDefault.h"
+#include "ijedi/FieldMetadata/FieldsMetadataMarine.h"
 
 // -------------------------------------------------------------------------------------------------
 
@@ -13,11 +14,16 @@ namespace ijedi
 
   // -----------------------------------------------------------------------------------------------
 
-  FieldsMetadata::FieldsMetadata(const int nlev) : longNames_()
+  FieldsMetadata::FieldsMetadata(const int nlev, const eckit::Configuration &modelData)
+    : longNames_()
   {
     // Set the default metadata
     // ------------------------
     setMetadata(fieldsMetadata_, nlev);
+
+    // Marine fields that depend on the geometry (CICE per-category sea ice)
+    // ---------------------------------------------------------------------
+    setMetadataMarine(fieldsMetadata_, nlev, modelData);
 
     // Create vector of the field long names
     // -------------------------------------

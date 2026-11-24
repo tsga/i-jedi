@@ -8,6 +8,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "eckit/config/Configuration.h"
+
 #include "oops/util/abor1_cpp.h"
 #include "oops/util/Printable.h"
 
@@ -151,7 +153,8 @@ namespace ijedi
   class FieldsMetadata : public util::Printable
   {
    public:
-    explicit FieldsMetadata(const int);
+    // nlev: number of model levels; modelData: geometry data (e.g. the sea-ice dimensions)
+    FieldsMetadata(const int, const eckit::Configuration &);
 
     // Get FieldMetadata from any of the potential field names
     FieldMetadata getFieldMetadata(const std::string &) const;

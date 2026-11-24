@@ -8,6 +8,12 @@ sea_water_salinity              : Min=0.0000000000e+00, Max=3.8530551989e+01, RM
 sea_water_potential_temperature : Min=-9.5949094698e-02, Max=3.0243471927e+01, RMS=1.4378141173e+01
 sea_surface_height_above_geoid  : Min=-9.7629600712e-02, Max=9.9900147104e-02, RMS=6.8157972517e-02
 sea_water_depth                 : Min=5.0000000000e-11, Max=4.4293223291e+03, RMS=8.9865627874e+02
+Writing State:
+  Valid time: 2020-12-16T00:00:00Z, nFields = 4
+sea_water_salinity              : Min=0.0000000000e+00, Max=3.8530551989e+01, RMS=3.3508073963e+01
+sea_water_potential_temperature : Min=-9.5949094698e-02, Max=3.0243471927e+01, RMS=1.4378141173e+01
+sea_surface_height_above_geoid  : Min=-9.7629600712e-02, Max=9.9900147104e-02, RMS=6.8157972517e-02
+sea_water_depth                 : Min=5.0000000000e-11, Max=4.4293223291e+03, RMS=8.9865627874e+02
 CostJo   : Nonlinear Jo(SST) = 4.2868718235e+03, nobs = 199, Jo/n = 2.1542069465e+01, err = 3.6419991997e-01
 CostJo   : Nonlinear Jo(InsituSalinity) = 1.3873547525e+03, nobs = 12, Jo/n = 1.1561289604e+02, err = 5.0000000745e-02
 CostFunction: Nonlinear J = 5.6742265760e+03

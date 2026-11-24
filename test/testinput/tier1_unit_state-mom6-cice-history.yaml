@@ -1,0 +1,71 @@
+# Sea ice read from a CICE history file through the mom6 io with "thickness from volume":
+# hi_h and hs_h are grid-cell means, divided by aice_h on read. The write then read test writes
+# the per-ice-area thicknesses, which tools/check_cice_io.py checks.
+geometry:
+  geometry_type: mom6
+  ocean_hgrid: data_generated/mom6/ocean_hgrid.nc
+  ocean_topog: data_generated/mom6/ocean_topog.nc
+  vertical geometry from: data_generated/mom6/MOM.res.nc
+  has northern fold: true
+  coarsen factor: 1
+  fringe width: 2
+  MOM_input:
+    NIGLOBAL: 72
+    NJGLOBAL: 35
+    NZ: 25
+    LAYOUT: [3, 2]
+    MINIMUM_DEPTH: 0.5
+state test:
+  statefile:
+    date: 2021-01-01T00:00:00Z
+    state variables:
+    - sea_water_potential_temperature
+    - sea_water_salinity
+    - sea_surface_height_above_geoid
+    - sea_ice_area_fraction
+    - sea_ice_thickness
+    - sea_ice_snow_thickness
+    - sea_water_depth
+    io:
+      filetype: mom6
+      datapath: data_generated/mom6
+      ocn_file: MOM.res.nc
+      ice_file: cice6.nc
+      fix_file: mom6_structuredgeometry_cache_grid.nc
+      field io names: &mom6_field_io_names
+        sea_water_potential_temperature: Temp
+        sea_water_salinity: Salt
+        sea_surface_height_above_geoid: ave_ssh
+        sea_ice_area_fraction: aice_h
+        sea_ice_thickness: hi_h
+        sea_ice_snow_thickness: hs_h
+        sea_water_depth: sea_water_depth
+      thickness from volume:
+        sea_ice_thickness: hi_h
+        sea_ice_snow_thickness: hs_h
+  write then read test:
+    state write:
+      io:
+        filetype: mom6
+        datapath: data_generated/mom6
+        ocn_file: mom6_cice_history_write_test.nc
+        field io names: *mom6_field_io_names
+    state read:
+      date: 2021-01-01T00:00:00Z
+      state variables:
+      - sea_water_potential_temperature
+      - sea_water_salinity
+      - sea_surface_height_above_geoid
+      - sea_ice_area_fraction
+      - sea_ice_thickness
+      - sea_ice_snow_thickness
+      - sea_water_depth
+      io:
+        filetype: mom6
+        datapath: data_generated/mom6
+        ocn_file: mom6_cice_history_write_test.nc
+        field io names: *mom6_field_io_names
+  date: 2021-01-01T00:00:00Z
+  norm file: 2.11931371347136010e+05
+  tolerance: 1.0e-05
+  test variable change constructor: false

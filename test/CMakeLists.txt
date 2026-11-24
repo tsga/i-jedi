@@ -127,6 +127,37 @@ ecbuild_add_test( TARGET  ijedi_state_mom6
                   ARGS    state ${CMAKE_CURRENT_SOURCE_DIR}/testinput/tier1_unit_state-mom6.yaml
                   TEST_DEPENDS ijedi_setup_mom6_testdata ijedi_geometry_cache_mom6)
 
+# Sea ice: CICE history read through the mom6 io ("thickness from volume"), and the CICE
+# restart io (read, update in place)
+ecbuild_add_test( TARGET  ijedi_state_mom6_cice_history
+                  MPI     6
+                  OMP     1
+                  COMMAND $<TARGET_FILE:ijedi_test.x>
+                  ARGS    state ${CMAKE_CURRENT_SOURCE_DIR}/testinput/tier1_unit_state-mom6-cice-history.yaml
+                  TEST_DEPENDS ijedi_setup_mom6_testdata ijedi_geometry_cache_mom6)
+
+# The cice io updates the restart in place: stage a fresh copy before each run (in the
+# workflow, staging the restart is done outside of JEDI)
+ecbuild_add_test(TARGET  ijedi_stage_cice_restart
+                 TYPE    SCRIPT
+                 COMMAND ${CMAKE_COMMAND}
+                 ARGS    -E copy ${CMAKE_CURRENT_BINARY_DIR}/data_generated/mom6/cice6_restart.nc
+                         ${CMAKE_CURRENT_BINARY_DIR}/data_generated/mom6/cice6_restart_write_test.nc
+                 TEST_DEPENDS ijedi_setup_mom6_testdata)
+
+ecbuild_add_test( TARGET  ijedi_state_cice
+                  MPI     6
+                  OMP     1
+                  COMMAND $<TARGET_FILE:ijedi_test.x>
+                  ARGS    state ${CMAKE_CURRENT_SOURCE_DIR}/testinput/tier1_unit_state-cice.yaml
+                  TEST_DEPENDS ijedi_stage_cice_restart)
+
+ecbuild_add_test(TARGET  ijedi_check_cice_io
+                 TYPE    SCRIPT
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_cice_io.py
+                 ARGS    ${CMAKE_CURRENT_BINARY_DIR}/data_generated/mom6
+                 TEST_DEPENDS ijedi_state_cice ijedi_state_mom6_cice_history)
+
 # H(x) tests
 ecbuild_add_test( TARGET  ijedi_hofx3d_mom6
                   MPI     6

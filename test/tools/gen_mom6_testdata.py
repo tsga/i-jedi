@@ -335,6 +335,66 @@ def gen_cice6_history(outdir):
     print(f"  {out_nc}")
 
 
+def gen_cice6_restart(outdir):
+    """Generate cice6_restart.nc with CICE6-restart-format sea-ice fields on the 72x35 grid.
+
+    Same ice as cice6.nc, split into 5 thickness categories with fixed weights:
+    aicen, vicen, vsnon (grid-cell means) and Tsfcn on (ncat, nj, ni); the thermodynamic
+    layers, one variable per layer as in CICE (7 ice layers: qice001.., sice001..; 1 snow
+    layer: qsno001) and the melt ponds (apnd, hpnd, ipnd), with values that differ between
+    categories and layers; and the 2-D
+    iceumask, which JEDI does not read (an io update must leave it unchanged).
+    """
+    nj, ni = 35, 72
+    weights = np.array([0.1, 0.2, 0.3, 0.25, 0.15])
+    n_ice_layers, n_snow_layers = 7, 1
+
+    gridspec_nc = os.path.join(outdir, "soca_gridspec.72x35x25.nc")
+    with netCDF4.Dataset(gridspec_nc) as gs:
+        lat2d = gs["lat"][0].data           # (nj, ni)
+        mask  = gs["mask2d"][0].data        # (nj, ni) 1=ocean 0=land
+
+    aice = ice_concentration(lat2d) * mask
+    in_ice_hi = np.where(lat2d > 0.0, 2.0, 1.0)
+    in_ice_hs = np.where(lat2d > 0.0, 0.3, 0.1)
+    vice = aice * in_ice_hi
+    vsno = aice * in_ice_hs
+    tsfc = np.where(aice > 0.0, -5.0, 0.0)
+
+    out_nc = os.path.join(outdir, "cice6_restart.nc")
+    with netCDF4.Dataset(out_nc, "w", format="NETCDF4") as ds:
+        ds.title  = "CICE restart (synthetic test data)"
+        ds.source = "gen_mom6_testdata.py"
+        ds.createDimension("ncat", len(weights))
+        ds.createDimension("nj",   nj)
+        ds.createDimension("ni",   ni)
+        for name, field in (("aicen", aice), ("vicen", vice), ("vsnon", vsno)):
+            v = ds.createVariable(name, "f8", ("ncat", "nj", "ni"))
+            v[:] = weights[:, np.newaxis, np.newaxis] * field[np.newaxis, :, :]
+        v = ds.createVariable("Tsfcn", "f8", ("ncat", "nj", "ni"))
+        v[:] = np.broadcast_to(tsfc, (len(weights), nj, ni))
+        ice = (aice > 0.0).astype(np.float64)
+        snow = (vsno > 0.0).astype(np.float64)
+        cat = 1.0 + 0.01 * np.arange(1, len(weights) + 1)[:, np.newaxis, np.newaxis]
+        for layer in range(1, n_ice_layers + 1):
+            v = ds.createVariable(f"qice{layer:03d}", "f8", ("ncat", "nj", "ni"))
+            v[:] = -3.0e8 * (1.0 + 0.1 * layer) * cat * ice[np.newaxis, :, :]
+            v = ds.createVariable(f"sice{layer:03d}", "f8", ("ncat", "nj", "ni"))
+            v[:] = (4.0 + 0.5 * layer) * cat * ice[np.newaxis, :, :]
+        for layer in range(1, n_snow_layers + 1):
+            v = ds.createVariable(f"qsno{layer:03d}", "f8", ("ncat", "nj", "ni"))
+            v[:] = -1.2e8 * (1.0 + 0.1 * layer) * cat * snow[np.newaxis, :, :]
+        # melt ponds: area fraction, depth and refrozen lid thickness, different magnitudes so
+        # that a swapped mapping fails the check
+        for name, value in (("apnd", 0.1), ("hpnd", 0.05), ("ipnd", 0.01)):
+            v = ds.createVariable(name, "f8", ("ncat", "nj", "ni"))
+            v[:] = value * cat * ice[np.newaxis, :, :]
+        v = ds.createVariable("iceumask", "f8", ("nj", "ni"))
+        v[:] = (aice > 0.0).astype(np.float64)
+
+    print(f"  {out_nc}")
+
+
 def main():
     if len(sys.argv) != 3:
         print(f"Usage: {sys.argv[0]} <input_dir> <output_dir>")
@@ -370,6 +430,11 @@ def main():
     # cice6.nc — CICE6-format sea-ice history (aice_h, hi_h, hs_h, sice_h)
     # -------------------------------------------------------------------------
     gen_cice6_history(outdir)
+
+    # -------------------------------------------------------------------------
+    # cice6_restart.nc — CICE6-format sea-ice restart (aicen, vicen, vsnon, Tsfcn)
+    # -------------------------------------------------------------------------
+    gen_cice6_restart(outdir)
 
     print(f"MOM6 test data written to: {outdir}")
 

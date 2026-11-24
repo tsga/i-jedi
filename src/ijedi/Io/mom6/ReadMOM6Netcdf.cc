@@ -154,7 +154,8 @@ void readMOM6Netcdf(const std::vector<std::string> & filepaths,
                     const std::vector<std::string> & fileVarNames,
                     const std::vector<double> & scalings,
                     const eckit::mpi::Comm & comm,
-                    const mom6::VelocityGridInfo * velGrid) {
+                    const mom6::VelocityGridInfo * velGrid,
+                    const std::vector<std::string> & levelDimNames) {
   const bool isRoot = (comm.rank() == 0);
   const auto fs =
       atlas::functionspace::NodeColumns(x.field(0).functionspace());
@@ -203,7 +204,7 @@ void readMOM6Netcdf(const std::vector<std::string> & filepaths,
 
       // z dimension is optional: 2D files (sea ice, fix) may not have one
       bool hasZDim = false;
-      for (const auto & zName : std::vector<std::string>{"Layer", "z_l", "zaxis_1", "nz"}) {
+      for (const auto & zName : levelDimNames) {
         int dimid;
         if (nc_inq_dimid(ncid, zName.c_str(), &dimid) == NC_NOERR) {
           nc_inq_dimlen(ncid, dimid, &dimNz);
@@ -438,7 +439,8 @@ void readMOM6NetcdfBlocks(const std::vector<std::string> & filepaths,
                           atlas::FieldSet & x,
                           const std::vector<std::string> & fileVarNames,
                           const std::vector<double> & scalings,
-                          const GeometryMOM6 & geom) {
+                          const GeometryMOM6 & geom,
+                          const std::vector<std::string> & levelDimNames) {
   const bool isRoot = (geom.comm().rank() == 0);
   const mom6::Block block = geom.mom6Block();
   const size_t nLocal = block.size();
@@ -490,7 +492,7 @@ void readMOM6NetcdfBlocks(const std::vector<std::string> & filepaths,
                             " x " + std::to_string(geom.njEff()), Here());
     }
     int zDimId = -1;
-    for (const auto & zName : std::vector<std::string>{"Layer", "z_l", "zaxis_1", "nz"}) {
+    for (const auto & zName : levelDimNames) {
       if (nc_inq_dimid(ncid, zName.c_str(), &zDimId) == NC_NOERR) {
         nc_inq_dimlen(ncid, zDimId, &dimNz);
         break;

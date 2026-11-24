@@ -31,21 +31,27 @@ class GeometryMOM6;
 ///                     velocity pair is stored on the C-grid (lonq/latq dims):
 ///                     faces are averaged to h-points and rotated to
 ///                     eastward/northward.
+/// @param levelDimNames Candidate names of the level dimension of multi-level
+///                     fields (MOM6 layers by default; "ncat" for CICE restarts).
 void readMOM6Netcdf(const std::vector<std::string> & filepaths,
                     atlas::FieldSet & x,
                     const std::vector<std::string> & fileVarNames,
                     const std::vector<double> & scalings,
                     const eckit::mpi::Comm & comm,
-                    const mom6::VelocityGridInfo * velGrid = nullptr);
+                    const mom6::VelocityGridInfo * velGrid = nullptr,
+                    const std::vector<std::string> & levelDimNames =
+                      {"Layer", "z_l", "zaxis_1", "nz"});
 
 /// Distributed variant: each task reads only its MOM6 block of each variable
 /// (hyperslab) and the values are scattered to the JEDI points it owns, then
 /// halo-exchanged.  No task holds a global field.  Every file must be on the
-/// geometry's (effective) horizontal grid.
+/// geometry's (effective) horizontal grid.  levelDimNames as in readMOM6Netcdf.
 void readMOM6NetcdfBlocks(const std::vector<std::string> & filepaths,
                           atlas::FieldSet & x,
                           const std::vector<std::string> & fileVarNames,
                           const std::vector<double> & scalings,
-                          const GeometryMOM6 & geom);
+                          const GeometryMOM6 & geom,
+                          const std::vector<std::string> & levelDimNames =
+                            {"Layer", "z_l", "zaxis_1", "nz"});
 
 }  // namespace ijedi

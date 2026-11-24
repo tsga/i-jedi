@@ -5,6 +5,9 @@
 #include <unordered_set>
 #include <vector>
 
+#include "atlas/field.h"
+#include "atlas/functionspace.h"
+
 namespace ijedi {
 namespace mom6 {
 
@@ -63,6 +66,13 @@ void readVerticalGeometryBlock(const std::string & path,
                                const Block & block,
                                std::vector<double> * layerThickness,
                                std::vector<double> * layerCenterDepth);
+
+// Read 1-D point data (latitude, longitude, vars) from a netCDF file and interpolate
+// the variables onto dstFunctionSpace with 10-nearest-neighbours weighting, as soca does
+// for its geometry fields (e.g. rossby_radius from rossrad.nc).
+atlas::FieldSet readNcAndInterp(const std::string & filename,
+                                const std::vector<std::string> & vars,
+                                const atlas::FunctionSpace & dstFunctionSpace);
 
 void rewriteLeveledNodeDataAsTime(const std::string & filename,
                                   const std::unordered_set<std::string> & timeFields);

@@ -60,6 +60,8 @@ static std::map<std::string, std::vector<std::string>> cookbook() {
       {"mole_fraction_of_ozone_in_air",           {"MoleFractionOfOzoneInAir_A"}},
       // sst: from t
       {"sea_surface_temperature",                 {"SeaSurfaceTemperature_A"}},
+      // sss: from s
+      {"sea_surface_salinity",                    {"SeaSurfaceSalinity_A"}},
       // t_insitu: NL from thetao (sea_water_potential_temperature), salinity, depth, lat/lon
       //           (SeaWaterTemperature_A); TL/AD via linearized TEOS-10 Jacobian
       //           (SeaWaterTemperature_B). Both are needed so the variable change

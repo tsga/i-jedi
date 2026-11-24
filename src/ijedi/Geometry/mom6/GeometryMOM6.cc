@@ -606,76 +606,55 @@ void GeometryMOM6::buildFields(bool buildVerticalGeometry)
     fields_.add(fGmask);
   }
 
-  // TODO(guillaumevernieres): buildDistFromCoast is too slow at high resolution.
-  // Make it optional (config-gated) and/or optimize the distance-to-coast
-  // computation before re-enabling it here.
-  // if (buildVerticalGeometry) {
-  //   buildDistFromCoast(lonGlobal, latGlobal, wetGlobal, mask3dGlobal);
-  // }
+  // The distance to the coast is added by the constructor, only when requested
+  // ("distance from coast"): it needs the global grid, which is not kept here.
 }
 
 // ---------------------------------------------------------------------------
-// Compute great-circle distance (metres) from each JEDI point to the
-// nearest land cell.  lonGlobal/latGlobal/wetGlobal are full global arrays
-// (all ranks have them), so no MPI needed.
-void GeometryMOM6::buildDistFromCoast(const std::vector<double> & lonGlobal,
-                                       const std::vector<double> & latGlobal,
-                                       const std::vector<double> & wetGlobal,
-                                       const std::vector<double> & mask3dGlobal)
+// Great-circle distance (metres) from each JEDI node in jediPoints_ (owned and
+// ghost) to the nearest surface land cell.  lonGlobal/latGlobal/wetGlobal are
+// the full effective-grid arrays (all ranks have them while the JEDI function
+// space is built), so no MPI is needed.
+std::vector<double> GeometryMOM6::computeDistFromCoast(const std::vector<double> & lonGlobal,
+                                                       const std::vector<double> & latGlobal,
+                                                       const std::vector<double> & wetGlobal) const
 {
   const int nGlobal = static_cast<int>(wetGlobal.size());
   const int npts    = static_cast<int>(jediPoints_.size());
-  const size_t nHoriz = static_cast<size_t>(njEff_) * niEff_;
 
-  // --- 2-D surface distance (one KD-tree from surface land points) ---
-  {
-    atlas::util::IndexKDTree kdtree;
-    for (int i = 0; i < nGlobal; ++i) {
-      if (wetGlobal[i] == 0.0)
-        kdtree.insert(atlas::PointLonLat{lonGlobal[i], latGlobal[i]},
-                      static_cast<atlas::idx_t>(i));
-    }
-    kdtree.build();
-
-    atlas::Field fDist = functionSpace_.createField<double>(
-        atlas::option::name("dist_from_coast") | atlas::option::levels(1));
-    auto vDist = atlas::array::make_view<double, 2>(fDist);
-    for (int n = 0; n < npts; ++n) {
-      const int gIdx = jediPoints_[n].second * niEff_ + jediPoints_[n].first;
-      const atlas::PointLonLat pt{lonGlobal[gIdx], latGlobal[gIdx]};
-      const auto nearest = kdtree.closestPoint(pt);
-      const int landK = static_cast<int>(nearest.payload());
-      vDist(n, 0) = atlas::util::Earth::distance(
-          pt, atlas::PointLonLat{lonGlobal[landK], latGlobal[landK]});
-    }
-    fields_.add(fDist);
+  atlas::util::IndexKDTree kdtree;
+  for (int i = 0; i < nGlobal; ++i) {
+    if (wetGlobal[i] == 0.0)
+      kdtree.insert(atlas::PointLonLat{lonGlobal[i], latGlobal[i]},
+                    static_cast<atlas::idx_t>(i));
   }
+  kdtree.build();
 
-  // --- 3-D per-layer distance (one KD-tree per level from mask3d land points) ---
-  atlas::Field fDist3d = functionSpace_.createField<double>(
-      atlas::option::name("dist_from_coast3d") | atlas::option::levels(numLevels_));
-  auto vDist3d = atlas::array::make_view<double, 2>(fDist3d);
-
-  for (int k = 0; k < numLevels_; ++k) {
-    atlas::util::IndexKDTree kdtree;
-    for (int i = 0; i < nGlobal; ++i) {
-      const size_t idx = static_cast<size_t>(k) * nHoriz + i;
-      if (mask3dGlobal[idx] == 0.0)
-        kdtree.insert(atlas::PointLonLat{lonGlobal[i], latGlobal[i]},
-                      static_cast<atlas::idx_t>(i));
-    }
-    kdtree.build();
-
-    for (int n = 0; n < npts; ++n) {
-      const int gIdx = jediPoints_[n].second * niEff_ + jediPoints_[n].first;
-      const atlas::PointLonLat pt{lonGlobal[gIdx], latGlobal[gIdx]};
-      const auto nearest = kdtree.closestPoint(pt);
-      const int landK = static_cast<int>(nearest.payload());
-      vDist3d(n, k) = atlas::util::Earth::distance(
-          pt, atlas::PointLonLat{lonGlobal[landK], latGlobal[landK]});
-    }
+  std::vector<double> dist(npts);
+  for (int n = 0; n < npts; ++n) {
+    const int gIdx = jediPoints_[n].second * niEff_ + jediPoints_[n].first;
+    const atlas::PointLonLat pt{lonGlobal[gIdx], latGlobal[gIdx]};
+    const auto nearest = kdtree.closestPoint(pt);
+    const int landK = static_cast<int>(nearest.payload());
+    dist[n] = atlas::util::Earth::distance(
+        pt, atlas::PointLonLat{lonGlobal[landK], latGlobal[landK]});
   }
-  fields_.add(fDist3d);
+  return dist;
+}
+
+// ---------------------------------------------------------------------------
+// Add the distance to the coast (one value per jediPoints_ node) to fields_ as
+// "dist_from_coast"; the periodic / northern-fold halo nodes added by
+// build_halo get their owners' values by halo exchange.
+void GeometryMOM6::addDistFromCoast(const std::vector<double> & dist)
+{
+  atlas::Field fDist = functionSpace_.createField<double>(
+      atlas::option::name("dist_from_coast") | atlas::option::levels(1));
+  auto vDist = atlas::array::make_view<double, 2>(fDist);
+  vDist.assign(std::numeric_limits<double>::quiet_NaN());
+  for (size_t n = 0; n < dist.size(); ++n) vDist(n, 0) = dist[n];
+  atlas::functionspace::NodeColumns(functionSpace_).haloExchange(fDist);
+  fields_.add(fDist);
 }
 
 // ---------------------------------------------------------------------------
@@ -985,6 +964,15 @@ GeometryMOM6::GeometryMOM6(const eckit::Configuration & conf,
     throw eckit::BadValue("fringe width must be non-negative, got " +
                           std::to_string(fringeWidth_), Here());
   hasFold_ = conf.getBool("has northern fold", true);
+
+  // Sea-ice dimensions: the per-category CICE fields are named by category
+  // (sea_ice_category<k>_...) and their levels are the ice or snow layers
+  nSeaIceCategories_ = conf.getInt("sea ice categories", nSeaIceCategories_);
+  nSeaIceLayers_     = conf.getInt("sea ice layers", nSeaIceLayers_);
+  nSnowLayers_       = conf.getInt("snow layers", nSnowLayers_);
+  if (nSeaIceCategories_ < 1 || nSeaIceLayers_ < 1 || nSnowLayers_ < 1)
+    throw eckit::BadValue("MOM6 geometry: sea ice categories, sea ice layers and snow layers "
+                          "must be positive", Here());
   }
 
   oops::Log::debug() << "GeometryMOM6: NI=" << niGlobal_ << " NJ=" << njGlobal_
@@ -1097,6 +1085,7 @@ GeometryMOM6::GeometryMOM6(const eckit::Configuration & conf,
   // 5. JEDI unstructured function space (ocean + retained fringe).  The
   //    partitioner needs the global wet mask and T-point lon/lat; nothing
   //    else is global, and these are released right after.
+  std::vector<double> distFromCoast;  // per jediPoints_ node, if requested
   {
     std::vector<double> lonGlobal, latGlobal, depthGlobal, wetGlobal;
     {
@@ -1108,8 +1097,16 @@ GeometryMOM6::GeometryMOM6(const eckit::Configuration & conf,
       std::vector<double>().swap(depthGlobal);
     }
     memStats("readGlobalLonLatWet");
-    util::Timer timer("ijedi::GeometryMOM6", "buildJediFunctionSpace");
-    buildJediFunctionSpace(comm, wetGlobal, lonGlobal, latGlobal);
+    {
+      util::Timer timer("ijedi::GeometryMOM6", "buildJediFunctionSpace");
+      buildJediFunctionSpace(comm, wetGlobal, lonGlobal, latGlobal);
+    }
+    // Optional distance to the coast (used by the marine observation filters): it needs
+    // the global lon/lat and wet mask, so it is computed here, before they are released
+    if (conf.getBool("distance from coast", false)) {
+      util::Timer timer("ijedi::GeometryMOM6", "computeDistFromCoast");
+      distFromCoast = computeDistFromCoast(lonGlobal, latGlobal, wetGlobal);
+    }
   }
   memStats("buildJediFunctionSpace");
 
@@ -1131,6 +1128,18 @@ GeometryMOM6::GeometryMOM6(const eckit::Configuration & conf,
   if (conf.getBool("check scatter map", false)) {
     util::Timer timer("ijedi::GeometryMOM6", "checkScatterMap");
     checkScatterMap();
+  }
+
+  // Optional geometry-derived fields used by the marine observation filters
+  if (!distFromCoast.empty()) {
+    util::Timer timer("ijedi::GeometryMOM6", "addDistFromCoast");
+    addDistFromCoast(distFromCoast);
+    std::vector<double>().swap(distFromCoast);
+  }
+  if (conf.has("rossby radius file")) {
+    util::Timer timer("ijedi::GeometryMOM6", "readRossbyRadius");
+    fields_.add(mom6::readNcAndInterp(conf.getString("rossby radius file"),
+                                      {"rossby_radius"}, functionSpace_).field("rossby_radius"));
   }
 
   // 7. Optionally save grids to NetCDF / debug files
@@ -1166,6 +1175,9 @@ GeometryMOM6::GeometryMOM6(const eckit::Configuration & conf,
     geomVariables.set("nj", njEff_);
     geomVariables.set("nz", numLevels_);
     geomVariables.set("has northern fold", hasFold_);
+    geomVariables.set("sea ice categories", nSeaIceCategories_);
+    geomVariables.set("sea ice layers", nSeaIceLayers_);
+    geomVariables.set("snow layers", nSnowLayers_);
   }
 
   memStats("done");
@@ -1507,14 +1519,57 @@ std::vector<double> GeometryMOM6::verticalCoord(std::string &) const
 
 // ---------------------------------------------------------------------------
 void GeometryMOM6::addModelVaderIngredients(const atlas::FieldSet & geomFields,
-                                            atlas::FieldSet & fset, int nlevels) const
+                                            atlas::FieldSet & fset, int /*nlevels*/) const
 {
-  // Ingredients for the SeaWaterTemperature_A/_B recipes:
-  //  - latitude/longitude, from the fieldset's own function space;
-  //  - sea_area_fraction, indexed per level by the _B Jacobian, so broadcast
-  //    the 2D land/sea mask across all levels.
+  // Ingredients for the SeaWaterTemperature_A recipe: latitude/longitude, from the
+  // fieldset's own function space.
   addLonLatIngredients(fset);
-  addBroadcastIngredient(geomFields, "mask2d", "sea_area_fraction", nlevels, fset);
+
+  // Single-level geometry fields that the marine observation filters request as
+  // GeoVaLs (as soca's Model2GeoVaLs provides them). Only those requested are kept.
+  // sea_area_fraction is single-level, as in soca: the SeaWaterTemperature_B
+  // Jacobian (not in the default cookbook yet) will have to broadcast it per level.
+  addBroadcastIngredient(geomFields, "mask2d", "sea_area_fraction", 1, fset);
+  addBroadcastIngredient(geomFields, "dist_from_coast", "distance_from_coast", 1, fset);
+
+  const auto addDerived = [&](const std::string & name, auto && value) {
+    if (fset.has(name)) return;
+    atlas::Field f = geomFields.field("mask2d").functionspace().createField<double>(
+        atlas::option::name(name) | atlas::option::levels(1));
+    auto view = atlas::array::make_view<double, 2>(f);
+    for (atlas::idx_t n = 0; n < f.shape(0); ++n) view(n, 0) = value(n);
+    fset.add(f);
+  };
+  const auto mask = atlas::array::make_view<double, 2>(geomFields.field("mask2d"));
+
+  // Water column depth: sum of the layer thicknesses (soca sums the state's h),
+  // or the topography when no vertical geometry was read
+  if (geomFields.has("sea_water_cell_thickness")) {
+    const auto h = atlas::array::make_view<double, 2>(geomFields.field("sea_water_cell_thickness"));
+    addDerived("sea_floor_depth_below_sea_surface", [&](atlas::idx_t n) {
+      double depth = 0.0;
+      for (atlas::idx_t k = 0; k < h.shape(1); ++k) depth += h(n, k);
+      return depth;
+    });
+  } else {
+    addBroadcastIngredient(geomFields, "depth", "sea_floor_depth_below_sea_surface", 1, fset);
+  }
+
+  // Layer-centre depth, the vertical coordinate of the in-situ profile operators
+  // (InsituTemperature, VertInterp), from the vertical geometry (soca computes it from the
+  // state's layer thicknesses)
+  if (geomFields.has("sea_water_depth") && !fset.has("sea_water_depth")) {
+    fset.add(geomFields.field("sea_water_depth").clone());
+  }
+
+  // Mesoscale representation error dx / R, as in soca
+  if (geomFields.has("rossby_radius")) {
+    const auto area = atlas::array::make_view<double, 2>(geomFields.field("area"));
+    const auto rossby = atlas::array::make_view<double, 2>(geomFields.field("rossby_radius"));
+    addDerived("mesoscale_representation_error", [&](atlas::idx_t n) {
+      return mask(n, 0) * std::sqrt(area(n, 0)) / rossby(n, 0);
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------

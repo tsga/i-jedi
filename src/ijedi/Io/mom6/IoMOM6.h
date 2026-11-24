@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -48,6 +49,15 @@ namespace ijedi
     oops::Parameter<std::string> velocity_grid{"velocity grid",
                                                "tracer or native",
                                                "tracer", this};
+
+    // Fields read from a file variable that holds a per-cell volume (thickness times
+    // sea_ice_area_fraction), e.g. the CICE history hi_h and hs_h: field -> file variable.
+    // On read, these fields are divided by sea_ice_area_fraction (0 where there is no ice),
+    // which must be a variable of the same read. Writing is not affected.
+    oops::OptionalParameter<std::map<std::string, std::string>> thickness_from_volume{
+        "thickness from volume",
+        "fields read as per-cell volumes and divided by sea_ice_area_fraction: "
+        "field -> file variable", this};
   };
 
   // -------------------------------------------------------------------------------------------------
@@ -68,11 +78,14 @@ namespace ijedi
 
    private:
     void print(std::ostream &) const override;
+    // Divide the "thickness from volume" fields of x by sea_ice_area_fraction
+    void divideVolumesByIceFraction(atlas::FieldSet &) const;
 
     const Geometry & geom_;
     std::vector<std::string> readFilepaths_;  // ordered: ocn, ice, fix
     std::string writeFilepath_;               // ocean file for write
     bool nativeVelocity_ = false;             // write velocities on the C-grid
+    std::map<std::string, std::string> thicknessFromVolume_;  // field -> file volume variable
   };
 
   // -------------------------------------------------------------------------------------------------

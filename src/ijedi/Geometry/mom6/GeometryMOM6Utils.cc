@@ -10,7 +10,16 @@
 #include <utility>
 #include <vector>
 
+#include "atlas/array.h"
+#include "atlas/functionspace/PointCloud.h"
+#include "atlas/interpolation/Interpolation.h"
+#include "atlas/parallel/mpi/mpi.h"
+#include "atlas/util/Point.h"
+
+#include "eckit/config/LocalConfiguration.h"
 #include "eckit/exception/Exceptions.h"
+
+#include "oops/util/Timer.h"
 
 namespace ijedi {
 namespace mom6 {
@@ -423,6 +432,81 @@ void rewriteLeveledNodeDataAsTime(const std::string & filename,
     throw eckit::Exception("Failed replacing Gmsh file after level->time rewrite: " +
                                filename,
                            Here());
+}
+
+atlas::FieldSet readNcAndInterp(const std::string & filename,
+                                const std::vector<std::string> & vars,
+                                const atlas::FunctionSpace & dstFunctionSpace) {
+  util::Timer timer("ijedi::mom6", "readNcAndInterp");
+  const atlas::mpi::Comm & comm = atlas::mpi::comm(dstFunctionSpace.mpi_comm());
+
+  // Read latitude/longitude on the root PE and broadcast them
+  size_t srcSize = 0;
+  std::vector<double> latitudes, longitudes;
+  int ncid = -1;  // only valid on the root PE
+  if (comm.rank() == 0) {
+    if (nc_open(filename.c_str(), NC_NOWRITE, &ncid) != NC_NOERR)
+      throw eckit::CantOpenFile(filename, Here());
+    int latVarId, lonVarId, nDims, dimId;
+    if (nc_inq_varid(ncid, "latitude", &latVarId) != NC_NOERR ||
+        nc_inq_varid(ncid, "longitude", &lonVarId) != NC_NOERR)
+      throw eckit::UserError("latitude/longitude not found in " + filename, Here());
+    nc_inq_varndims(ncid, latVarId, &nDims);
+    ASSERT(nDims == 1);
+    nc_inq_vardimid(ncid, latVarId, &dimId);
+    nc_inq_dimlen(ncid, dimId, &srcSize);
+    latitudes.resize(srcSize);
+    longitudes.resize(srcSize);
+    nc_get_var_double(ncid, latVarId, latitudes.data());
+    nc_get_var_double(ncid, lonVarId, longitudes.data());
+  }
+  comm.broadcast(srcSize, 0);
+  latitudes.resize(srcSize);
+  longitudes.resize(srcSize);
+  comm.broadcast(latitudes.data(), srcSize, 0);
+  comm.broadcast(longitudes.data(), srcSize, 0);
+
+  // Source point cloud, identical on every PE
+  atlas::Field srcLonLat("lonlat", atlas::array::make_datatype<double>(),
+                         atlas::array::make_shape(srcSize, 2));
+  auto srcLonLatView = atlas::array::make_view<double, 2>(srcLonLat);
+  for (size_t i = 0; i < srcSize; ++i) {
+    atlas::PointLonLat point(longitudes[i], latitudes[i]);
+    point.normalise();
+    srcLonLatView(i, 0) = point.lon();
+    srcLonLatView(i, 1) = point.lat();
+  }
+  const atlas::functionspace::PointCloud srcFunctionSpace(srcLonLat);
+
+  eckit::LocalConfiguration interpConfig;
+  interpConfig.set("type", "k-nearest-neighbours");
+  interpConfig.set("k-nearest-neighbours", 10);
+  atlas::Interpolation interp(interpConfig, srcFunctionSpace, dstFunctionSpace);
+
+  atlas::FieldSet fieldSet;
+  for (const std::string & varName : vars) {
+    std::vector<double> varData(srcSize);
+    if (comm.rank() == 0) {
+      int varId;
+      if (nc_inq_varid(ncid, varName.c_str(), &varId) != NC_NOERR)
+        throw eckit::UserError(varName + " not found in " + filename, Here());
+      nc_get_var_double(ncid, varId, varData.data());
+    }
+    comm.broadcast(varData.data(), srcSize, 0);
+
+    atlas::Field srcField = srcFunctionSpace.createField<double>(
+        atlas::option::name(varName) | atlas::option::levels(1));
+    auto srcView = atlas::array::make_view<double, 2>(srcField);
+    for (size_t i = 0; i < srcSize; ++i) srcView(i, 0) = varData[i];
+
+    atlas::Field dstField = dstFunctionSpace.createField<double>(
+        atlas::option::name(varName) | atlas::option::levels(1));
+    interp.execute(srcField, dstField);
+    fieldSet.add(dstField);
+  }
+
+  if (comm.rank() == 0) nc_close(ncid);
+  return fieldSet;
 }
 
 }  // namespace mom6

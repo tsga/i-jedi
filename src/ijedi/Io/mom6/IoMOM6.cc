@@ -113,6 +113,9 @@ namespace ijedi
                              + velocityGrid, Here());
     nativeVelocity_ = (velocityGrid == "native");
 
+    if (params.thickness_from_volume.value())
+      thicknessFromVolume_ = *params.thickness_from_volume.value();
+
     oops::Log::trace() << classname() << " constructor done" << std::endl;
   }
 
@@ -123,13 +126,19 @@ namespace ijedi
     util::Timer timer(classname(), "read state");
     oops::Log::trace() << classname() << " read state starting" << std::endl;
 
-    // Resolve variable names and scalings for all fields
+    // Resolve variable names and scalings for all fields ("thickness from volume" fields are
+    // read from their volume variable)
     std::vector<std::string> fileVarNames;
     std::vector<double> scalings;
     for (const auto & field : x) {
       const std::string jediName = field.name();
-      fileVarNames.push_back(fileionames.has(jediName)
-                             ? fileionames.getString(jediName) : "");
+      const auto volume = thicknessFromVolume_.find(jediName);
+      if (volume != thicknessFromVolume_.end()) {
+        fileVarNames.push_back(volume->second);
+      } else {
+        fileVarNames.push_back(fileionames.has(jediName)
+                               ? fileionames.getString(jediName) : "");
+      }
       scalings.push_back(fileioscaling.has(jediName)
                          ? fileioscaling.getDouble(jediName) : 0.0);
     }
@@ -152,8 +161,34 @@ namespace ijedi
     applyBoundaryConditions(x, geom_.fields().field("mask3d"),
                           geom_.getFieldMetadata());
 
+    // Per-cell volumes -> thicknesses per ice area (as soca reads the CICE history files)
+    divideVolumesByIceFraction(x);
+
     oops::Log::trace() << classname() << " read state done" << std::endl;
   }
+
+  // -------------------------------------------------------------------------------------------------
+  void IoMOM6::divideVolumesByIceFraction(atlas::FieldSet &x) const
+  {
+    bool any = false;
+    for (const auto & entry : thicknessFromVolume_) any = any || x.has(entry.first);
+    if (!any) return;
+    if (!x.has("sea_ice_area_fraction"))
+      throw eckit::UserError(classname() + ": \"thickness from volume\" needs "
+                             "sea_ice_area_fraction in the variables read", Here());
+
+    const auto fraction = atlas::array::make_view<const double, 2>(x["sea_ice_area_fraction"]);
+    for (const auto & entry : thicknessFromVolume_) {
+      if (!x.has(entry.first)) continue;
+      auto thickness = atlas::array::make_view<double, 2>(x[entry.first]);
+      for (atlas::idx_t n = 0; n < thickness.shape(0); ++n)
+        for (atlas::idx_t k = 0; k < thickness.shape(1); ++k)
+          thickness(n, k) = fraction(n, 0) > 0.0 ? thickness(n, k) / fraction(n, 0) : 0.0;
+      oops::Log::info() << classname() << ": " << entry.first << " <- " << entry.second
+                        << " / sea_ice_area_fraction" << std::endl;
+    }
+  }
+
   // -------------------------------------------------------------------------------------------------
   void IoMOM6::write(const atlas::FieldSet &x, const eckit::LocalConfiguration &fileionames,
                      const eckit::LocalConfiguration &fileioscaling) const

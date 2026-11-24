@@ -5,6 +5,8 @@
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <string>
+#include <unordered_set>
 
 #include "atlas/field.h"
 #include "eckit/config/Configuration.h"
@@ -56,11 +58,6 @@ namespace ijedi {
   }
 
   // -----------------------------------------------------------------------------------------------
-
-  State::State(const oops::Variables &vars, const State &other)
-      : mist::State(vars, other), geom_(other.geom_) {
-    setAtlasFieldMetadata();
-  }
 
   State::State(const State &other) : mist::State(other), geom_(other.geom_) {
     setAtlasFieldMetadata();
@@ -172,12 +169,16 @@ namespace ijedi {
   }
 
   void State::setAtlasFieldMetadata() {
+    // Geometry-derived fields that describe the land/sea boundary itself are interpolated
+    // across it, as in soca (masked: false), so that observations near or over land see them
+    static const std::unordered_set<std::string> unmasked = {"sea_area_fraction",
+                                                             "distance_from_coast"};
     for (auto & field : this->fieldSet()) {
       field.metadata().set("interp_type", "default");
       // A temporary hack for interpolation masks for MOM6.
       // This should be replaced by using a proper mask field for different fields
       // (probably coming from FieldsMetaData)
-      if (geom_.fields().has("mask2d")) {
+      if (geom_.fields().has("mask2d") && unmasked.count(field.name()) == 0) {
         field.metadata().set("mask", "mask2d");
         // MOM6 2D fields (e.g. SSH) live at the ocean surface: BUMP needs to
         // know which 3D level they pair with (as SOCA sets).

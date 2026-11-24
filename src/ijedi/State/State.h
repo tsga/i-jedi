@@ -80,7 +80,6 @@ namespace ijedi
     State(const Geometry &, const oops::Variables &, const util::DateTime &,
           bool initToZero = true);
     State(const Geometry &, const State &);
-    State(const oops::Variables &, const State &);
     State(const State &);
 
     ~State();

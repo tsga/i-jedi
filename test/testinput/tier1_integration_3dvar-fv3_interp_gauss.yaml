@@ -76,19 +76,14 @@ variational:
     test: on
 
 output:
-  io:
-    filetype: unstructured
-    filepath: 3dvar-fv3-interp-gauss-an
-
-final:
+  analysis:
+    io:
+      filetype: unstructured
+      filepath: 3dvar-fv3-interp-gauss-an
   increment:
-    output:
-      state component:
-        io:
-          filetype: unstructured
-          filepath: 3dvar-fv3-interp-gauss-inc
-
-final j evaluation: false
+    io:
+      filetype: unstructured
+      filepath: 3dvar-fv3-interp-gauss-inc
 
 #TODO: not passing in CI with the specified reference
 #test:

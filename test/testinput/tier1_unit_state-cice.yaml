@@ -1,0 +1,60 @@
+# CICE restart io (filetype cice) on the MOM6 geometry: read, then update in place and read
+# back. The ijedi_stage_cice_restart test copies cice6_restart.nc to
+# cice6_restart_write_test.nc first; tools/check_cice_io.py then checks the written file
+# against cice6_restart.nc.
+# The per-category fields are named by category, their levels are the ice or snow layers.
+# Only some categories are read and written (all quantities of category 2, the area fraction
+# of category 5), so the check also covers the categories that the write must leave unchanged.
+geometry:
+  geometry_type: mom6
+  ocean_hgrid: data_generated/mom6/ocean_hgrid.nc
+  ocean_topog: data_generated/mom6/ocean_topog.nc
+  vertical geometry from: data_generated/mom6/MOM.res.nc
+  has northern fold: true
+  coarsen factor: 1
+  fringe width: 2
+  sea ice categories: 5
+  sea ice layers: 7
+  snow layers: 1
+  MOM_input:
+    NIGLOBAL: 72
+    NJGLOBAL: 35
+    NZ: 25
+    LAYOUT: [3, 2]
+    MINIMUM_DEPTH: 0.5
+state test:
+  statefile:
+    date: 2021-01-01T00:00:00Z
+    state variables: &cice_vars
+    - sea_ice_category2_area_fraction
+    - sea_ice_category5_area_fraction
+    - sea_ice_category2_volume
+    - sea_ice_snow_category2_volume
+    - sea_ice_category2_surface_temperature
+    - sea_ice_category2_pond_area_fraction
+    - sea_ice_category2_pond_depth
+    - sea_ice_category2_pond_lid_thickness
+    - sea_ice_category2_enthalpy
+    - sea_ice_category2_ice_salinity
+    - sea_ice_snow_category2_enthalpy
+    io:
+      filetype: cice
+      datapath: data_generated/mom6
+      restart_file: cice6_restart.nc
+  write then read test:
+    state write:
+      io:
+        filetype: cice
+        datapath: data_generated/mom6
+        restart_file: cice6_restart_write_test.nc
+    state read:
+      date: 2021-01-01T00:00:00Z
+      state variables: *cice_vars
+      io:
+        filetype: cice
+        datapath: data_generated/mom6
+        restart_file: cice6_restart_write_test.nc
+  date: 2021-01-01T00:00:00Z
+  norm file: 2.21752522860957222e+10
+  tolerance: 1.0e-05
+  test variable change constructor: false
