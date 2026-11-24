@@ -31,6 +31,10 @@ list(APPEND ijedi_src_files
   Geometry/mom6/GeometryMOM6Utils.cc
   Geometry/mom6/GeometryMOM6Utils.h
 
+  Geometry/landVector/GeometryLandVector.cc
+  Geometry/landVector/GeometryLandVector.h
+  Geometry/landVector/TraitsLandVector.h
+
   # Fields
   FieldMetadata/FieldsMetadata.cc
   FieldMetadata/FieldsMetadata.h
@@ -66,6 +70,11 @@ list(APPEND ijedi_src_files
   Io/unstructured/IoUnstructured.h
   Io/utils/UpdateNetcdf.cc
   Io/utils/UpdateNetcdf.h
+  Io/StructuredGrid/IOStructuredGrid.cc
+  Io/StructuredGrid/IOStructuredGrid.h
+
+  Io/landVector/IOLandVector.cc
+  Io/landVector/IOLandVector.h
 
   # Variable change
   VariableChange/SeaSurfaceSalinity.h

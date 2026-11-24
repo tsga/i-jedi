@@ -53,7 +53,8 @@ endif()
 # ===============================================================================
 ecbuild_bundle( PROJECT jedicmake GIT    "https://github.com/jcsda/jedi-cmake.git"      UPDATE BRANCH develop RECURSIVE )
 if (BUILD_JEDI)
-  ecbuild_bundle( PROJECT oops      GIT    "https://github.com/JCSDA/oops.git"          UPDATE BRANCH develop )
+  ecbuild_bundle( PROJECT oops      GIT    "https://github.com/tsga/oops.git"          UPDATE BRANCH landVectorGeom )
+  #ecbuild_bundle( PROJECT oops SOURCE "../oops")
   ecbuild_bundle( PROJECT vader     GIT    "https://github.com/JCSDA/vader.git"         UPDATE BRANCH develop)
   if (CLONE_MIST)
     ecbuild_bundle( PROJECT mist      GIT    "https://github.com/JCSDA-internal/mist.git" UPDATE BRANCH develop )
@@ -72,6 +73,9 @@ if (BUILD_JEDI)
   endif()
 endif()
 ecbuild_bundle(PROJECT ijedi SOURCE "../")
+
+#temp land vector incr
+ecbuild_bundle( PROJECT land-apply_jedi_incr GIT "https://github.com/NOAA-EMC/land-apply_jedi_incr.git" UPDATE BRANCH ijedi_landinc )
 
 # ===============================================================================
 # required repositories
