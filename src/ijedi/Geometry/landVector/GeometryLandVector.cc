@@ -219,128 +219,6 @@ inline uint64_t pack_tile_ij(int tile, int i, int j) {
          static_cast<uint64_t>(j & 0xFFFF);
 }
 
-/*// direction-aware helper and replace your quad loop with sequential edge walkin
-struct Fv3StepState {
-  int t;     // 1-based tile (1..6)
-  int i;     // 0-based i (0..N-1)
-  int j;     // 0-based j (0..N-1)
-  int di;    // current step direction in i (-1, 0, 1)
-  int dj;    // current step direction in j (-1, 0, 1)
-  bool valid;
-};
-
-// Steps 1 cell from (t, i, j) along local direction (di, dj), updating (di, dj)
-// to match the target tile's coordinate frame if a rotated seam is crossed.
-inline Fv3StepState step_fv3_edge(int t, int i, int j, int di, int dj, int N) {
-  int ni = i + di;
-  int nj = j + dj;
-
-  // Interior step (no seam crossed)
-  if (ni >= 0 && ni < N && nj >= 0 && nj < N) {
-    return {t, ni, nj, di, dj, true};
-  }
-
-  // Reject diagonal steps directly; always walk orthogonally (|di| + |dj| == 1)
-  if (std::abs(di) + std::abs(dj) != 1) {
-    return {t, i, j, di, dj, false};
-  }
-
-  // Standard FV3 Gnomonic Cubed-Sphere Panel Connectivity (1-based tiles 1..6)
-  // Odd tiles (1, 3, 5):
-  //   East  (ni == N) -> Even tile (t+1), same orientation: i'=0, j'=j, (di',dj')=(1,0)
-  //   North (nj == N) -> Odd tile (t+2), rotated +90 deg:   i'=N-1-j (Wait: i'=j? See below)
-  // Specifically, for standard FV3 tile layout:
-  //   Tile 1: E->2 (unrot), N->3 (rot), W->5 (rot), S->6 (unrot)
-  //   Tile 2: E->4 (rot),   N->3 (unrot), W->1 (unrot), S->6 (rot)
-  //   (Cyclic shift +2 mod 6 for tiles 3/4 and 5/6)
-  const bool isOdd = (t % 2 == 1);
-  auto wrapTile = [](int raw) { return ((raw - 1 + 6) % 6) + 1; };
-
-  if (isOdd) {
-    if (ni == N) {
-      // East edge of odd tile -> West edge of (t+1), unrotated
-      return {wrapTile(t + 1), 0, j, 1, 0, true};
-    }
-    if (ni < 0) {
-      // West edge of odd tile -> North edge of (t-2), rotated -90 deg
-      // Stepping West (-i) enters from North moving South (-j')
-      return {wrapTile(t - 2), N - 1 - j, N - 1, 0, -1, true};
-    }
-    if (nj == N) {
-      // North edge of odd tile -> West edge of (t+2), rotated +90 deg
-      // Stepping North (+j) enters from West moving East (+i')
-      return {wrapTile(t + 2), 0, N - 1 - i, 1, 0, true};
-    }
-    if (nj < 0) {
-      // South edge of odd tile -> North edge of (t-1), unrotated
-      return {wrapTile(t - 1), i, N - 1, 0, -1, true};
-    }
-  } else {
-    // Even tiles (2, 4, 6)
-    if (ni == N) {
-      // East edge of even tile -> South edge of (t+2), rotated +90 deg
-      // Stepping East (+i) enters from South moving North (+j')
-      return {wrapTile(t + 2), N - 1 - j, 0, 0, 1, true};
-    }
-    if (ni < 0) {
-      // West edge of even tile -> East edge of (t-1), unrotated
-      return {wrapTile(t - 1), N - 1, j, -1, 0, true};
-    }
-    if (nj == N) {
-      // North edge of even tile -> South edge of (t+1), unrotated
-      return {wrapTile(t + 1), i, 0, 0, 1, true};
-    }
-    if (nj < 0) {
-      // South edge of even tile -> East edge of (t-2), rotated -90 deg
-      // Stepping South (-j) enters from East moving West (-i')
-      return {wrapTile(t - 2), N - 1, N - 1 - i, -1, 0, true};
-    }
-  }
-
-  return {t, i, j, di, dj, false};
-}
-
-// Sequentially find SE, NW, and NE so the rotated basis carries over to the NE corner
-// Helper: given SW=(t, i, j), returns {SE, NE, NW, all_valid}
-  auto get_fv3_quad_corners = [&](int t, int i, int j) {
-    struct Corner { int t, i, j; };
-    // 1. Step East from SW -> SE
-    Fv3StepState se = step_fv3_edge(t, i, j, 1, 0, N);
-    // 2. Step North from SW -> NW
-    Fv3StepState nw = step_fv3_edge(t, i, j, 0, 1, N);
-
-    if (!se.valid || !nw.valid) {
-      return std::make_tuple(Corner{}, Corner{}, Corner{}, false);
-    }
-
-    // 3. Step "North" relative to SW's frame starting from SE -> NE
-    // Note: if SE crossed an East seam onto an even tile, its frame is unrotated,
-    // so "North" is still (0, 1). If SE crossed onto a rotated tile, rotate (0, 1) accordingly:
-    int north_di = -se.dj;  // Left-hand perpendicular to East vector (se.di, se.dj)
-    int north_dj =  se.di;
-    Fv3StepState ne_from_se = step_fv3_edge(se.t, se.i, se.j, north_di, north_dj, N);
-
-    // 4. Verify consistency from NW stepping "East" (right-hand perpendicular to North vector)
-    int east_di =  nw.dj;
-    int east_dj = -nw.di;
-    Fv3StepState ne_from_nw = step_fv3_edge(nw.t, nw.i, nw.j, east_di, east_dj, N);
-
-    // At the 8 cubed-sphere corners, ne_from_se and ne_from_nw land on different tiles
-    // (3-valence triangle singularity). Skip quad here (or emit a 3-node triangle).
-    if (!ne_from_se.valid || !ne_from_nw.valid ||
-        ne_from_se.t != ne_from_nw.t ||
-        ne_from_se.i != ne_from_nw.i ||
-        ne_from_se.j != ne_from_nw.j) {
-      return std::make_tuple(Corner{}, Corner{}, Corner{}, false);
-    }
-
-    return std::make_tuple(
-        Corner{se.t, se.i, se.j},
-        Corner{ne_from_se.t, ne_from_se.i, ne_from_se.j},
-        Corner{nw.t, nw.i, nw.j},
-        true);
-  };
-*/
 
 struct Fv3Corner {
   int t;
@@ -1042,14 +920,6 @@ GeometryLandVector::SharedData::SharedData(const eckit::Configuration &config,
 
   oops::Log::info() << "proc " << my_rank << " min/max owned " << min_owned << " / " << max_owned << std::endl;
 
-  /*// 3. Determine panel resolution N across all ranks
-  int local_N = 0;
-  for (size_t n = 0; n < ownedCount_; ++n) {
-    local_N = std::max(local_N, std::max(rank_i[n], rank_j[n]));
-  }
-  int N = local_N;
-  comm.allReduceInPlace(N, eckit::mpi::Operation::MAX);*/
-
   const int N = config.getInt("resolution", 384);
   const int idxMin = 1; // *std::min_element(global_i.begin(), global_i.end());
   const int idxMax = N; //(idxMin == 1) ? N : (N - 1);
@@ -1119,7 +989,7 @@ GeometryLandVector::SharedData::SharedData(const eckit::Configuration &config,
     return {bestCorner, found};
   };
 
-auto get_fv3_quad_corners_geometric = [&](int t, int i, int j)
+  auto get_fv3_quad_corners_geometric = [&](int t, int i, int j)
       -> std::tuple<Fv3Corner, Fv3Corner, Fv3Corner, bool> {
     // Interior cell (both i+1 and j+1 are <= idxMax)
     if (i < idxMax && j < idxMax) {
@@ -1178,75 +1048,6 @@ auto get_fv3_quad_corners_geometric = [&](int t, int i, int j)
     std::sort(requests[r].begin(), requests[r].end());
     requests[r].erase(std::unique(requests[r].begin(), requests[r].end()), requests[r].end());
   }
-
-/*  // 5. Determine neighbor nodes required to close boundary quads across FV3 seams
-  std::vector<std::vector<atlas::gidx_t>> requests(nproc);
-  const std::array<std::pair<int, int>, 3> offsets = {{{1, 0}, {1, 1}, {0, 1}}};
-
-  for (size_t n = 0; n < ownedCount_; ++n) {
-    int t = rank_tiles[n];
-    int i = rank_i[n];
-    int j = rank_j[n];
-
-    for (const auto& off : offsets) {
-      auto [target_t, target_i, target_j, valid] =
-          resolve_fv3_seam_neighbor(t, i + off.first, j + off.second, N);
-      if (!valid) continue;
-
-      uint64_t key = pack_tile_ij(target_t, target_i, target_j);
-      auto it = globalCoordToIdx.find(key);
-      if (it != globalCoordToIdx.end()) {
-        size_t neighbor_g_idx = it->second;
-        int owner = rank_owning[neighbor_g_idx];
-
-        if (owner != my_rank) {
-          atlas::gidx_t req_gid = static_cast<atlas::gidx_t>(neighbor_g_idx + 1);
-          requests[owner].push_back(req_gid);
-        }
-      }
-    }
-  }
-
-  // Deduplicate request lists per destination rank
-  for (int r = 0; r < nproc; ++r) {
-    std::sort(requests[r].begin(), requests[r].end());
-    requests[r].erase(std::unique(requests[r].begin(), requests[r].end()), requests[r].end());
-  }
-
-// 5. Determine neighbor nodes required to close boundary quads across FV3 seams
-  std::vector<std::vector<atlas::gidx_t>> requests(nproc);
-
-  for (size_t n = 0; n < ownedCount_; ++n) {
-    int t = rank_tiles[n];
-    int i = rank_i[n];
-    int j = rank_j[n];
-
-    //auto [c_SE, c_NE, c_NW, valid] = get_fv3_quad_corners(t, i, j, N);
-    auto [c_SE, c_NE, c_NW, valid] = get_fv3_quad_corners_from_existing(t, i, j, N);
-    if (!valid) continue;
-
-    const std::array<Fv3Corner, 3> corners = {c_SE, c_NE, c_NW};
-    for (const auto& c : corners) {
-      uint64_t key = pack_tile_ij(c.t, c.i, c.j);
-      auto it = globalCoordToIdx.find(key);
-      if (it != globalCoordToIdx.end()) {
-        size_t neighbor_g_idx = it->second;
-        int owner = rank_owning[neighbor_g_idx];
-
-        if (owner != my_rank) {
-          atlas::gidx_t req_gid = static_cast<atlas::gidx_t>(neighbor_g_idx + 1);
-          requests[owner].push_back(req_gid);
-        }
-      }
-    }
-  }
-
-  // Deduplicate request lists per destination rank
-  for (int r = 0; r < nproc; ++r) {
-    std::sort(requests[r].begin(), requests[r].end());
-    requests[r].erase(std::unique(requests[r].begin(), requests[r].end()), requests[r].end());
-  }
-*/
 
   // 6. Non-blocking MPI halo exchange (Phase 1: Exchange node ID requests)
   std::vector<int> send_req_counts(nproc, 0);
@@ -1588,18 +1389,6 @@ auto get_fv3_quad_corners_geometric = [&](int t, int i, int j)
       global_index_view(i) = glbidxView(i);
       remote_index_view(i) = ridxView(i);
       
-      /*const double lon = lons[g_idx];
-      const double lat = lats[g_idx];
-      lonView(i, 0)    = lon;
-      latView(i, 0)    = lat;
-      lonlatView(i, 0) = lon;
-      lonlatView(i, 1) = lat;
-
-    } else {  //Clear / zero ghost slots before the exchange to ensure no stale data remains
-      lonView(i, 0)    = 0.0;
-      latView(i, 0)    = 0.0;
-      lonlatView(i, 0) = 0.0;
-      lonlatView(i, 1) = 0.0;*/
     }
   }
 
@@ -1642,13 +1431,6 @@ auto get_fv3_quad_corners_geometric = [&](int t, int i, int j)
   
 
   // do halo exchange
-  /*for (const auto &fieldName : geomFields_.field_names()) {
-  if (fieldName == "owned" || fieldName == "ghost" || 
-      fieldName == "gmask" || fieldName == "partition") {
-    continue; // Never exchange local partition or mask topology
-  }
-  functionSpace_.haloExchange(geomFields_[fieldName]);
-  }*/
 
   atlas::functionspace::NodeColumns fsHalo(functionSpace_);
 
@@ -1656,7 +1438,7 @@ auto get_fv3_quad_corners_geometric = [&](int t, int i, int j)
   fsHalo.haloExchange(lat_);
   fsHalo.haloExchange(lon_);
   fsHalo.haloExchange(lonlat_);
-  //fsHalo.haloExchange(owned_); do not fieldexchange owned
+  //fsHalo.haloExchange(owned_); do not halo exchange owned
   fsHalo.haloExchange(area_);
   fsHalo.haloExchange(global_index_);
   fsHalo.haloExchange(remote_index_);
